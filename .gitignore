@@ -1,0 +1,39 @@
+# Credentials / tokens
+app/google-oauth-client-secrets.json
+app/google-drive-token.json
+
+# Local settings (personal data — not committed; seeded from roadmap-settings.json on first run)
+settings/roadmap-settings.local.json
+settings/_backup_roadmap-settings.local.json
+
+# Build cache
+app/__pycache__/
+**/__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+app/.DS_Store
+
+# Logs
+app/launchd.log
+
+# Generated report output
+report/
+
+# Cached Jira snapshot
+data/raw-jira-snapshot.json
+
+# Local test virtualenv (pytest + openpyxl, for tests/test_report_sheets.py)
+.venv/
+
+# IDE
+.idea/
+
+# Personal debug/verification scripts and per-account skill files —
+# not part of the generic tool, not meant for the public repo
+verify_sample.py
+skills/
+
+# Per-machine runtime state
+app/.last-daily-run-utc

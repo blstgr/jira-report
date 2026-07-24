@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>roadmap-jira-report-missed-update-check</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__JIRA_REPORT_MONITOR_LAUNCHER__</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__JIRA_REPORT_LAUNCHER_DIR__</string>
+  <key>StartInterval</key>
+  <integer>3600</integer>
+  <key>StandardOutPath</key>
+  <string>/tmp/jira-report-monitor-launchd.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/jira-report-monitor-launchd.log</string>
+</dict>
+</plist>

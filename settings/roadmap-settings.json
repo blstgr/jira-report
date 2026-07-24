@@ -1,0 +1,21 @@
+{
+  "features": [
+    {
+      "keyword": "Your feature name or epic keyword",
+      "eta": "2026-01-01",
+      "expected_pace": 5
+    }
+  ],
+  "exclude": [
+    "keyword to exclude"
+  ],
+  "project_keys": ["YOUR_PROJECT_KEY"],
+  "done_statuses": ["Done", "QA Prod Done", "In Validation"],
+  "output": "report/roadmap 2026.xlsx",
+  "drive_folder": "",
+  "google_client_secrets": "app/google-oauth-client-secrets.json",
+  "local_only": true,
+  "update_time": "08:00",
+  "update_timezone": "UTC",
+  "_auto_generated": {}
+}

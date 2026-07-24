@@ -1,0 +1,25 @@
+#!/usr/bin/env python3
+from pathlib import Path
+import os
+import platform
+import subprocess
+import sys
+
+
+ROOT = Path(__file__).resolve().parent
+APP = ROOT / "app"
+
+
+def main():
+    system = platform.system().lower()
+    cmd = [sys.executable, str(APP / "roadmap-launcher.py")] if system == "windows" else ["python3", str(APP / "roadmap-launcher.py")]
+    try:
+        result = subprocess.run(cmd, cwd=ROOT)
+    except KeyboardInterrupt:
+        raise SystemExit(130)
+    if result.returncode != 0:
+        raise SystemExit(result.returncode)
+
+
+if __name__ == "__main__":
+    main()

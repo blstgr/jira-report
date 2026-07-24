@@ -1,0 +1,16 @@
+{
+  "steps": [
+    "Do this once:",
+    "1. Open https://console.cloud.google.com/",
+    "2. At the top of the page, click 'Select a project'.",
+    "3. Create a new project.",
+    "4. In the search bar, find 'Google Drive API' and click 'Enable'.",
+    "5. On the Google Drive API page, click 'Create credentials'.",
+    "6. Choose 'User data' and click 'Next'.",
+    "7. Skip scopes for now.",
+    "8. Create an OAuth Client ID and choose 'Desktop app'.",
+    "9. Download the JSON file and click 'Done'.",
+    "10. Go to OAuth consent screen > Audience > Test users, add your Google account, and save the changes.",
+    "11. Open the downloaded JSON file in TextEdit or Notepad and paste its full contents here."
+  ]
+}

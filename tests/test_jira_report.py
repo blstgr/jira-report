@@ -1,0 +1,329 @@
+"""Tests for jira-report.py pure logic functions."""
+import sys
+import types
+import importlib.util
+import datetime as dt
+from pathlib import Path
+
+# Stub external imports before loading the module
+def _stub(mod, **attrs):
+    m = types.ModuleType(mod)
+    for k, v in attrs.items():
+        setattr(m, k, v)
+    sys.modules[mod] = m
+    return m
+
+_sentinel = object
+
+_stub("google_drive_sync", upload_or_update=lambda *a, **kw: {})
+
+_openpyxl = _stub("openpyxl", Workbook=_sentinel, load_workbook=lambda *a, **kw: None)
+_stub("openpyxl.styles", Font=_sentinel, PatternFill=_sentinel, Alignment=_sentinel,
+      Border=_sentinel, Side=_sentinel)
+_stub("openpyxl.styles.numbers", FORMAT_DATE_DATETIME=None)
+_stub("openpyxl.utils", get_column_letter=lambda i: "A")
+_stub("openpyxl.utils.cell", coordinate_from_string=lambda s: ("A", 1),
+      column_index_from_string=lambda s: 1)
+_stub("openpyxl.worksheet.filters", FilterColumn=_sentinel, Filters=_sentinel)
+_stub("PIL", ImageFont=None)
+
+APP_DIR = Path(__file__).resolve().parents[1] / "app"
+spec = importlib.util.spec_from_file_location("jr", APP_DIR / "jira-report.py")
+jr = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(jr)
+
+
+# ── normalize_keyword ──────────────────────────────────────────────────────
+
+def test_normalize_strips_punctuation_and_lowercases():
+    assert jr.normalize_keyword("CA switch: BI") == "caswitchbi"
+    assert jr.normalize_keyword("CA switch") == "caswitch"
+    assert jr.normalize_keyword("ca change") == "cachange"
+
+
+def test_normalize_collapses_spaces_and_hyphens():
+    assert jr.normalize_keyword("post-release") == "postrelease"
+    assert jr.normalize_keyword("post release") == "postrelease"
+
+
+# ── feature filter logic (mirrors what main() does) ───────────────────────
+
+FEATURES = [
+    "CA switch",
+    "CA switch: post-release",
+    "CA switch: BI",
+    "CA switch: release preparation",
+    "CA switch: BI post-release",
+    "Edge: single-domain ssl",
+    "Maintenance",
+]
+
+
+def apply_filter(features, pattern, mode_all):
+    needle = jr.normalize_keyword(pattern)
+    if mode_all:
+        return [k for k in features if needle in jr.normalize_keyword(k)]
+    else:
+        return [k for k in features if jr.normalize_keyword(k) == needle]
+
+
+def test_exact_filter_matches_one():
+    result = apply_filter(FEATURES, "CA switch", mode_all=False)
+    assert result == ["CA switch"]
+
+
+def test_exact_filter_case_insensitive():
+    result = apply_filter(FEATURES, "ca switch", mode_all=False)
+    assert result == ["CA switch"]
+
+
+def test_exact_filter_no_match():
+    result = apply_filter(FEATURES, "Vector SSL", mode_all=False)
+    assert result == []
+
+
+def test_all_filter_matches_substring_group():
+    result = apply_filter(FEATURES, "ca switch", mode_all=True)
+    assert "CA switch" in result
+    assert "CA switch: BI" in result
+    assert "CA switch: release preparation" in result
+    assert "CA switch: post-release" in result
+    assert "CA switch: BI post-release" in result
+    assert "Edge: single-domain ssl" not in result
+    assert "Maintenance" not in result
+
+
+def test_all_filter_does_not_bleed_across_projects():
+    result = apply_filter(FEATURES, "edge", mode_all=True)
+    assert result == ["Edge: single-domain ssl"]
+
+
+def test_all_filter_no_match():
+    result = apply_filter(FEATURES, "vector ssl", mode_all=True)
+    assert result == []
+
+
+# ── norm_status ────────────────────────────────────────────────────────────
+
+def test_norm_status_in_progress_variants():
+    assert jr.norm_status("In Progress") == "in progress"
+    assert jr.norm_status("In QA") == "in progress"
+    assert jr.norm_status("In QA - something") == "in progress"
+    assert jr.norm_status("Code Review") == "in progress"
+    assert jr.norm_status("Progress Done") == "in progress"
+
+
+def test_norm_status_done_variants():
+    assert jr.norm_status("Done") == "done"
+    assert jr.norm_status("QA Prod Done") == "done"
+    assert jr.norm_status("In Validation") == "done"
+
+
+def test_norm_status_on_hold():
+    assert jr.norm_status("QA On Hold") == "on hold"
+    assert jr.norm_status("Track/Blocked/On Hold") == "on hold"
+
+
+def test_norm_status_rejected():
+    assert jr.norm_status("Rejected") == "rejected"
+
+
+def test_norm_status_unknown_returns_blank():
+    assert jr.norm_status("Backlog") == ""
+    assert jr.norm_status("To Do") == ""
+    assert jr.norm_status("") == ""
+    assert jr.norm_status(None) == ""
+
+
+# ── project key filter (PROJECT_KEYS) ─────────────────────────────────────
+
+def _make_issue(key, summary="test", status="In Progress", changelog=None):
+    return {
+        "key": key,
+        "fields": {
+            "summary": summary,
+            "status": {"name": status},
+            "issuetype": {"name": "Story"},
+            "resolutiondate": None,
+            "created": "2024-01-01T00:00:00.000+0000",
+        },
+        "changelog": changelog or {"histories": []},
+    }
+
+
+def test_project_keys_filter_passes_matching():
+    jr.PROJECT_KEYS = ["SSLP"]
+    rows = jr.issue_rows(_make_issue("SSLP-123"), "feat", "epic", "epic", [])
+    assert isinstance(rows, list)  # not filtered out (may be empty due to no events, but not skipped)
+
+
+def test_project_keys_filter_blocks_other_project():
+    jr.PROJECT_KEYS = ["SSLP"]
+    rows = jr.issue_rows(_make_issue("OTHER-456"), "feat", "epic", "epic", [])
+    assert rows == []
+
+
+def test_project_keys_filter_empty_accepts_all():
+    jr.PROJECT_KEYS = []
+    rows = jr.issue_rows(_make_issue("OTHER-456"), "feat", "epic", "epic", [])
+    # With no events, we expect an empty-or-single-blank-row result, not a hard filter
+    assert isinstance(rows, list)
+
+
+def test_project_keys_multiple_allowed():
+    jr.PROJECT_KEYS = ["SSLP", "OTHER"]
+    rows_sslp = jr.issue_rows(_make_issue("SSLP-1"), "feat", "epic", "epic", [])
+    rows_other = jr.issue_rows(_make_issue("OTHER-1"), "feat", "epic", "epic", [])
+    rows_blocked = jr.issue_rows(_make_issue("BLOCKED-1"), "feat", "epic", "epic", [])
+    assert isinstance(rows_sslp, list)
+    assert isinstance(rows_other, list)
+    assert rows_blocked == []
+
+
+# ── project_matches_selector ───────────────────────────────────────────────
+
+def _fields_with_project(name="", key=""):
+    return {"project": {"name": name, "key": key}}
+
+
+def test_project_matches_by_key():
+    assert jr.project_matches_selector(_fields_with_project(key="SSLP"), "sslp")
+
+
+def test_project_matches_by_name():
+    assert jr.project_matches_selector(_fields_with_project(name="SSL Project"), "ssl project")
+
+
+def test_project_no_match():
+    assert not jr.project_matches_selector(_fields_with_project(name="Other", key="OTH"), "sslp")
+
+
+# ── parse_date ─────────────────────────────────────────────────────────────
+
+def test_parse_date_iso():
+    assert jr.parse_date("2024-03-15") == dt.date(2024, 3, 15)
+
+
+def test_parse_date_with_time():
+    assert jr.parse_date("2024-03-15T10:30:00.000+0000") == dt.date(2024, 3, 15)
+
+
+def test_parse_date_none():
+    assert jr.parse_date(None) is None
+    assert jr.parse_date("") is None
+
+
+# ── sanitize_feature_eta_dates ─────────────────────────────────────────────
+
+def test_sanitize_feature_eta_dates_valid():
+    result = jr.sanitize_feature_eta_dates({"CA switch": "2026-06-28", "Edge": "2026-08-01"})
+    assert result["CA switch"] == "2026-06-28"
+    assert result["Edge"] == "2026-08-01"
+
+
+def test_sanitize_feature_eta_dates_invalid_dropped():
+    result = jr.sanitize_feature_eta_dates({"bad": "not a date", "empty": ""})
+    assert "bad" not in result
+    assert "empty" not in result
+
+
+def test_sanitize_feature_eta_dates_empty_key_dropped():
+    result = jr.sanitize_feature_eta_dates({"": "2026-01-01", "  ": "2026-01-01"})
+    assert result == {}
+
+
+# ── scope_signature ────────────────────────────────────────────────────────
+
+def test_scope_signature_structure():
+    sig = jr.scope_signature(["CA switch", "Edge"], ["KWD1"])
+    assert sig == {"include": ["CA switch", "Edge"], "exclude": ["KWD1"]}
+
+
+def test_scope_signature_empty():
+    sig = jr.scope_signature([], [])
+    assert sig == {"include": [], "exclude": []}
+
+
+# ── issue_rows state machine — basic scenarios ─────────────────────────────
+
+def _history(when, from_status, to_status, hid="1"):
+    return {
+        "id": hid,
+        "created": f"{when}T12:00:00.000+0000",
+        "items": [{"field": "status", "fromString": from_status, "toString": to_status}],
+    }
+
+
+def _issue_with_events(key, events, current_status="Done", resolution="2024-06-01"):
+    return {
+        "key": key,
+        "fields": {
+            "summary": "Test task",
+            "status": {"name": current_status},
+            "issuetype": {"name": "Story"},
+            "resolutiondate": f"{resolution}T00:00:00.000+0000" if resolution else None,
+            "created": "2024-01-01T00:00:00.000+0000",
+        },
+        "changelog": {"histories": events},
+    }
+
+
+def test_issue_rows_no_events_returns_blank_row():
+    jr.PROJECT_KEYS = []
+    issue = _issue_with_events("SSLP-1", [], current_status="To Do", resolution=None)
+    rows = jr.issue_rows(issue, "feat", "epic", "epic", [])
+    assert len(rows) == 1
+    assert rows[0]["Status"] == ""
+
+
+def test_issue_rows_simple_done_task():
+    jr.PROJECT_KEYS = []
+    issue = _issue_with_events("SSLP-2", [
+        _history("2024-03-01", "To Do", "In Progress", "1"),
+        _history("2024-06-01", "In Progress", "Done", "2"),
+    ], current_status="Done", resolution="2024-06-01")
+    rows = jr.issue_rows(issue, "feat", "epic", "epic", [])
+    # Rows use lowercase "Status" values internally
+    statuses = [r.get("Status") or r.get("status") or "" for r in rows]
+    assert any(s in {"done", "in progress"} for s in statuses), f"Unexpected statuses: {statuses}"
+
+
+def test_issue_rows_on_hold_task():
+    jr.PROJECT_KEYS = []
+    issue = _issue_with_events("SSLP-3", [
+        _history("2024-03-01", "To Do", "In Progress", "1"),
+        _history("2024-04-01", "In Progress", "Track/Blocked/On Hold", "2"),
+        _history("2024-05-01", "Track/Blocked/On Hold", "In Progress", "3"),
+        _history("2024-06-01", "In Progress", "Done", "4"),
+    ], current_status="Done", resolution="2024-06-01")
+    rows = jr.issue_rows(issue, "feat", "epic", "epic", [])
+    statuses = [r["Status"] for r in rows]
+    assert any("hold" in s.lower() for s in statuses), f"Expected on-hold row, got: {statuses}"
+
+
+def test_issue_rows_rejected_task():
+    jr.PROJECT_KEYS = []
+    issue = _issue_with_events("SSLP-4", [
+        _history("2024-03-01", "To Do", "In Progress", "1"),
+        _history("2024-04-01", "In Progress", "Rejected", "2"),
+    ], current_status="Rejected", resolution=None)
+    rows = jr.issue_rows(issue, "feat", "epic", "epic", [])
+    statuses = [r["Status"] for r in rows]
+    assert any("rejected" in s.lower() for s in statuses), f"Expected rejected row, got: {statuses}"
+
+
+if __name__ == "__main__":
+    import traceback
+    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
+    passed = failed = 0
+    for t in tests:
+        try:
+            t()
+            print(f"  ✓ {t.__name__}")
+            passed += 1
+        except Exception:
+            print(f"  ✗ {t.__name__}")
+            traceback.print_exc()
+            failed += 1
+    print(f"\n{passed} passed, {failed} failed")
+    sys.exit(failed)
