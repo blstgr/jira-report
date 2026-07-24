@@ -75,7 +75,7 @@ def main():
     ]
 
     _notify("Fetching updates from Jira… ☕")
-    message, vpn_error = _run_update(cmd)
+    message, vpn_error, output_path = _run_update(cmd)
 
     if vpn_error:
         _notify("Can't reach Jira — check your VPN connection.")
@@ -92,7 +92,7 @@ def main():
             _notify("Fetching updates from Jira… ☕")
             # Try up to 3 times in case VPN is still settling
             for _attempt in range(3):
-                message, vpn_error = _run_update(cmd)
+                message, vpn_error, output_path = _run_update(cmd)
                 if not vpn_error:
                     break
                 if _attempt < 2:
@@ -102,8 +102,29 @@ def main():
             _notify("Connected to VPN but can't reach Jira — try running manually.")
             return
 
+    if output_path:
+        _sync_to_drive(output_path)
+
     drive_url = _drive_url()
     _notify(message, open_url=drive_url)
+
+
+def _sync_to_drive(output_path: str) -> None:
+    try:
+        settings = json.loads(STATE.read_text())
+    except Exception:
+        return
+    drive_folder = settings.get("drive_folder")
+    google_client_secrets = settings.get("google_client_secrets")
+    if settings.get("local_only") or not drive_folder or not google_client_secrets:
+        return
+    sys.path.insert(0, str(ROOT))
+    try:
+        from google_drive_sync import upload_or_update
+        upload_or_update(output_path, drive_folder, Path(output_path).name, google_client_secrets)
+        print(f"[drive] synced {output_path} to {drive_folder}", flush=True)
+    except Exception as exc:
+        print(f"[drive] upload failed: {exc}", flush=True)
 
 
 def _drive_url() -> str:
@@ -159,23 +180,25 @@ def _vpn_connected() -> bool:
 
 
 def _run_update(cmd: list) -> tuple:
-    """Run jira-report --update. Returns (message, vpn_error)."""
+    """Run jira-report --update. Returns (message, vpn_error, output_path)."""
     result = subprocess.run(cmd, cwd=ROOT.parent, capture_output=True, text=True)
     output = (result.stdout or "") + (result.stderr or "")
     print(f"[update] rc={result.returncode} out={output[-300:]!r}", flush=True)
     vpn_keywords = ("timed out", "connection refused", "Operation timed out",
                     "VPN", "Cannot connect", "network is unreachable", "dropped")
     if result.returncode == 87 or any(k.lower() in output.lower() for k in vpn_keywords):
-        return None, True  # vpn error, no message yet
+        return None, True, None  # vpn error, no message yet
     STAMP.write_text(dt.datetime.now().strftime("%Y-%m-%d"))
+    path_match = re.search(r"Wrote (.+\.xlsx) —", output)
+    output_path = path_match.group(1) if path_match else None
     m = re.search(r"(\d+) tasks? updated their status", output)
     if m and int(m.group(1)) > 0:
-        return f"{m.group(1)} task(s) updated their status.", False
+        return f"{m.group(1)} task(s) updated their status.", False, output_path
     if "All quiet" in output or result.returncode == 88 or (m and int(m.group(1)) == 0):
-        return "All quiet on the Jira front. Come back when someone actually does something.", False
+        return "All quiet on the Jira front. Come back when someone actually does something.", False, output_path
     if result.returncode != 0:
-        return "Update finished with errors — check the log.", False
-    return "Report updated.", False
+        return "Update finished with errors — check the log.", False, output_path
+    return "Report updated.", False, output_path
 
 
 if __name__ == "__main__":

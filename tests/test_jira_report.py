@@ -312,6 +312,20 @@ def test_issue_rows_rejected_task():
     assert any("rejected" in s.lower() for s in statuses), f"Expected rejected row, got: {statuses}"
 
 
+def test_load_report_spec_fallback_has_no_hardcoded_feature_keyword():
+    """When prompts/roadmap-spec.json is missing, the fallback must not silently
+    default to any real company's feature name — it should be None, forcing the
+    caller to require explicit configuration instead."""
+    original = jr.SPEC_PATH
+    jr.SPEC_PATH = Path("/nonexistent/roadmap-spec.json")
+    try:
+        spec = jr.load_report_spec()
+    finally:
+        jr.SPEC_PATH = original
+    assert spec["feature_keyword"] is None
+    assert spec["exclude_keywords"] == ["post release", "post-release"]
+
+
 if __name__ == "__main__":
     import traceback
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

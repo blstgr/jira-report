@@ -22,6 +22,8 @@
   <dict>
     <key>TZ</key>
     <string>__JIRA_REPORT_TZ__</string>
+    <key>JIRA_HOST</key>
+    <string>__JIRA_REPORT_JIRA_HOST__</string>
   </dict>
   <key>StandardOutPath</key>
   <string>/tmp/jira-report-launchd.log</string>

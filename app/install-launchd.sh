@@ -14,6 +14,11 @@ else
     UPDATE_TZ="UTC"
 fi
 
+if [ -z "${JIRA_HOST:-}" ]; then
+    echo "JIRA_HOST is not set. Export it (e.g. in your shell profile) before installing the daily update — the tool has no built-in default." >&2
+    exit 1
+fi
+
 HOUR=$(echo "$UPDATE_TIME" | cut -d: -f1 | sed 's/^0//')
 MINUTE=$(echo "$UPDATE_TIME" | cut -d: -f2 | sed 's/^0//')
 HOUR=${HOUR:-8}
@@ -65,6 +70,7 @@ install_plist() {
         -e "s|__JIRA_REPORT_HOUR__|$HOUR|g" \
         -e "s|__JIRA_REPORT_MINUTE__|$MINUTE|g" \
         -e "s|__JIRA_REPORT_TZ__|$UPDATE_TZ|g" \
+        -e "s|__JIRA_REPORT_JIRA_HOST__|$JIRA_HOST|g" \
         "$SRC" > "$TMP"
     mv "$TMP" "$TARGET"
     # JIRA_REPORT_TEST_MODE lets tests exercise plist/wrapper generation

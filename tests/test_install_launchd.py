@@ -45,6 +45,7 @@ def _run_install(fake_home):
     env = dict(os.environ)
     env["HOME"] = str(fake_home)
     env["JIRA_REPORT_TEST_MODE"] = "1"  # skip real launchctl load/unload
+    env["JIRA_HOST"] = "test.example.com"
     result = subprocess.run(
         ["bash", str(INSTALL_SCRIPT)],
         env=env,
@@ -138,6 +139,7 @@ def test_install_does_not_touch_real_launchctl_state_in_test_mode(fake_home, mon
     env = dict(os.environ)
     env["HOME"] = str(fake_home)
     env["JIRA_REPORT_TEST_MODE"] = "1"
+    env["JIRA_HOST"] = "test.example.com"
     env["PATH"] = f"{fake_bin}:{env.get('PATH', '')}"
     result = subprocess.run(
         ["bash", str(INSTALL_SCRIPT)],
@@ -148,3 +150,31 @@ def test_install_does_not_touch_real_launchctl_state_in_test_mode(fake_home, mon
     )
     assert result.returncode == 0, f"install-launchd.sh failed:\n{result.stdout}\n{result.stderr}"
     assert "launchctl should not run" not in result.stderr
+
+
+def test_install_fails_fast_without_jira_host(fake_home):
+    # The tool has no hardcoded Jira host default (removed so the public repo
+    # stays company-agnostic) — installing without JIRA_HOST set must fail
+    # loudly instead of silently shipping a daily job that can never reach Jira.
+    env = dict(os.environ)
+    env["HOME"] = str(fake_home)
+    env["JIRA_REPORT_TEST_MODE"] = "1"
+    env.pop("JIRA_HOST", None)
+    result = subprocess.run(
+        ["bash", str(INSTALL_SCRIPT)],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode != 0
+    assert "JIRA_HOST" in result.stderr
+    assert not (fake_home / "Library" / "LaunchAgents").exists() or not list(
+        (fake_home / "Library" / "LaunchAgents").glob("*.plist")
+    )
+
+
+def test_installed_plist_carries_jira_host_through(fake_home):
+    _run_install(fake_home)
+    plist = _load_plist(fake_home, "roadmap-jira-report-update")
+    assert plist["EnvironmentVariables"]["JIRA_HOST"] == "test.example.com"
