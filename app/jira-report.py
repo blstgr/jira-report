@@ -688,12 +688,21 @@ def extract_events(issue):
     return [(when, frm, to) for _key, when, frm, to in events]
 
 
-def detect_eta_field_ids():
-    try:
-        fields = jget(f"{BASE}/field")
-    except Exception:
-        return list(DEFAULT_ETA_FIELD_IDS)
+def detect_jira_fields():
+    """Single /field lookup shared by ETA/epic-name/epic-link detection.
+    These three used to each run their own /field request wrapped in a
+    blanket try/except that silently fell back to defaults on ANY failure —
+    including a VPN drop or an auth error, both of which the tool already
+    has a clear message for elsewhere (main()'s own JiraAuthError/
+    JiraNetworkError handling). That meant up to three redundant, unguarded
+    network round trips — no spinner, no output — before the report ever
+    printed anything, which is what "just sits there loading" with no VPN
+    message actually was. Let those two propagate; only a truly unexpected
+    response falls back to sensible defaults."""
+    return jget(f"{BASE}/field", context="detecting your Jira field configuration")
 
+
+def detect_eta_field_ids(fields):
     scored = []
     for field in fields:
         field_id = field.get("id")
@@ -718,12 +727,7 @@ def detect_eta_field_ids():
     return ordered
 
 
-def detect_epic_link_field_id():
-    try:
-        fields = jget(f"{BASE}/field")
-    except Exception:
-        return None
-
+def detect_epic_link_field_id(fields):
     for field in fields:
         field_id = field.get("id")
         name = (field.get("name") or "").strip()
@@ -732,12 +736,7 @@ def detect_epic_link_field_id():
     return None
 
 
-def detect_epic_name_field_ids():
-    try:
-        fields = jget(f"{BASE}/field")
-    except Exception:
-        return ["customfield_10011"]
-
+def detect_epic_name_field_ids(fields):
     scored = []
     for field in fields:
         field_id = field.get("id")
@@ -2664,9 +2663,15 @@ def main():
         _cached_link = state.get("_auto_generated", {}).get("epic_link_field_id") or state.get("epic_link_field_id")
         epic_link_field_id = str(_cached_link) if _cached_link else "customfield_10014"
     else:
-        epic_name_field_ids = detect_epic_name_field_ids()
-        eta_field_ids = detect_eta_field_ids()
-        epic_link_field_id = detect_epic_link_field_id()
+        try:
+            _detected_fields = run_spinner("Detecting your Jira field configuration...", detect_jira_fields)
+        except (JiraAuthError, JiraNetworkError):
+            raise
+        except Exception:
+            _detected_fields = []
+        epic_name_field_ids = detect_epic_name_field_ids(_detected_fields)
+        eta_field_ids = detect_eta_field_ids(_detected_fields)
+        epic_link_field_id = detect_epic_link_field_id(_detected_fields)
     # Rebuild `features` list from canonical keyword order + any eta/pace data,
     # so the saved file stays in the tidy one-keyword-per-entry format.
     # When a feature filter is active, include_values is a subset — merge

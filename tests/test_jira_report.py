@@ -365,6 +365,87 @@ def test_fetch_all_search_works_without_progress_callback():
     assert items == [{"key": "T-1"}]
 
 
+def test_detect_jira_fields_calls_field_endpoint_once():
+    original_jget = jr.jget
+    calls = []
+    jr.jget = lambda *a, **kw: calls.append((a, kw)) or [{"id": "customfield_1", "name": "ETA"}]
+    try:
+        result = jr.detect_jira_fields()
+    finally:
+        jr.jget = original_jget
+    assert len(calls) == 1
+    assert calls[0][0][0] == f"{jr.BASE}/field"
+    assert result == [{"id": "customfield_1", "name": "ETA"}]
+
+
+def test_detect_jira_fields_propagates_network_error():
+    # Regression: this used to be caught by a blanket try/except inside each
+    # of the three detect_*_field_id(s) functions and silently swallowed,
+    # which meant a VPN drop just made report generation sit there with no
+    # output and no error — instead of the clear VPN message main()'s own
+    # JiraNetworkError handling already provides everywhere else.
+    original_jget = jr.jget
+
+    def _raise(*a, **kw):
+        raise jr.JiraNetworkError("Jira or VPN connection appears to have dropped")
+
+    jr.jget = _raise
+    try:
+        try:
+            jr.detect_jira_fields()
+            assert False, "expected JiraNetworkError to propagate"
+        except jr.JiraNetworkError:
+            pass
+    finally:
+        jr.jget = original_jget
+
+
+def test_detect_jira_fields_propagates_auth_error():
+    original_jget = jr.jget
+
+    def _raise(*a, **kw):
+        raise jr.JiraAuthError("Jira authentication failed with HTTP 401")
+
+    jr.jget = _raise
+    try:
+        try:
+            jr.detect_jira_fields()
+            assert False, "expected JiraAuthError to propagate"
+        except jr.JiraAuthError:
+            pass
+    finally:
+        jr.jget = original_jget
+
+
+def test_detect_eta_field_ids_prefers_exact_match_over_substring():
+    fields = [
+        {"id": "customfield_1", "name": "Something ETA related"},
+        {"id": "customfield_2", "name": "ETA"},
+    ]
+    ordered = jr.detect_eta_field_ids(fields)
+    assert ordered[0] == "customfield_2"
+
+
+def test_detect_eta_field_ids_falls_back_to_defaults_when_nothing_matches():
+    assert jr.detect_eta_field_ids([]) == list(jr.DEFAULT_ETA_FIELD_IDS)
+
+
+def test_detect_epic_link_field_id_matches_by_name():
+    fields = [
+        {"id": "customfield_9", "name": "Something else"},
+        {"id": "customfield_10014", "name": "Epic Link"},
+    ]
+    assert jr.detect_epic_link_field_id(fields) == "customfield_10014"
+
+
+def test_detect_epic_link_field_id_returns_none_when_not_found():
+    assert jr.detect_epic_link_field_id([]) is None
+
+
+def test_detect_epic_name_field_ids_falls_back_to_default_when_nothing_matches():
+    assert jr.detect_epic_name_field_ids([]) == ["customfield_10011"]
+
+
 if __name__ == "__main__":
     import traceback
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
