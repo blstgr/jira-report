@@ -684,7 +684,13 @@ def _install_node_via_brew(brew):
     try:
         subprocess.run([brew, "install", "node"], check=True)
     except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-        print(f"Node.js install failed: {exc}")
+        print(f"Node.js install via Homebrew failed: {exc}")
+        print(
+            "If Homebrew printed a fix above (often a 'sudo chown ...' command for "
+            "/opt/homebrew), run that in Terminal, then run this tool again — "
+            "Homebrew itself refuses to install packages as root, so being an admin "
+            "doesn't skip this step."
+        )
         return False
     return _resolve_npx() is not None
 

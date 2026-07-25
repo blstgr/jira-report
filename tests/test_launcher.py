@@ -339,6 +339,22 @@ def test_ensure_node_installs_via_brew_when_already_present():
     fake_run.assert_called_once_with(["/fake/brew", "install", "node"], check=True)
 
 
+def test_install_node_via_brew_points_to_homebrew_own_fix_on_failure(capsys):
+    # Regression: a real user hit `brew install node` failing because
+    # /opt/homebrew had broken ownership (a common footgun from a prior
+    # `sudo brew ...`). Homebrew's own error already prints the exact fix
+    # (a `sudo chown` command) — our message must point back at it instead
+    # of burying it under a generic "install from nodejs.org" fallback.
+    import subprocess as _subprocess
+    with patch.object(launcher.subprocess, "run",
+                      side_effect=_subprocess.CalledProcessError(1, ["brew", "install", "node"])):
+        result = launcher._install_node_via_brew("/fake/brew")
+    assert result is False
+    output = capsys.readouterr().out.lower()
+    assert "chown" in output
+    assert "admin" in output
+
+
 def test_ensure_node_declines_homebrew_when_brew_missing():
     with patch.object(launcher, "_resolve_npx", return_value=None), \
          patch.object(launcher, "_resolve_brew", return_value=None), \
