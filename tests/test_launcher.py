@@ -12,6 +12,8 @@ import shutil
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 # ── stub external deps before loading the module ──────────────────────────
 for mod in ["google_drive_sync"]:
     m = types.ModuleType(mod)
@@ -277,6 +279,50 @@ def test_parse_update_time_invalid():
     assert launcher.parse_update_time("banana") is None
     assert launcher.parse_update_time("25:00") is None
     assert launcher.parse_update_time("") is None
+
+
+def test_run_jira_setup_ctrl_c_exits_cleanly_not_a_traceback():
+    # Regression: Ctrl-C during the interactive `npx @atlassian-dc-mcp/jira
+    # setup` subprocess used to bubble up as an unhandled CalledProcessError
+    # (exit 130) all the way out of main(), printing a raw traceback instead
+    # of a clean message telling the user what happened.
+    import subprocess as _subprocess
+    with patch.object(launcher.subprocess, "run",
+                      side_effect=_subprocess.CalledProcessError(130, launcher.JIRA_SETUP_CMD)):
+        with pytest.raises(SystemExit) as exc_info:
+            launcher.run_jira_setup()
+    assert "cancelled" in str(exc_info.value).lower()
+
+
+def test_run_jira_setup_other_failure_exits_cleanly():
+    import subprocess as _subprocess
+    with patch.object(launcher.subprocess, "run",
+                      side_effect=_subprocess.CalledProcessError(1, launcher.JIRA_SETUP_CMD)):
+        with pytest.raises(SystemExit) as exc_info:
+            launcher.run_jira_setup()
+    assert "code 1" in str(exc_info.value).lower()
+
+
+def test_ensure_jira_token_does_not_wrap_interactive_setup_in_spinner():
+    # Regression: run_jira_setup() must NOT run inside run_spinner()'s
+    # background-thread animation — the spinner redraws over stdout every
+    # 120ms and erases the interactive setup subprocess's own prompts,
+    # making a working setup wizard look hung. Confirm the spinner is only
+    # ever invoked with the token-check function, never with run_jira_setup.
+    spinner_targets = []
+
+    def fake_spinner(message, work_fn):
+        spinner_targets.append(work_fn)
+        return work_fn()
+
+    with patch.object(launcher, "run_spinner", side_effect=fake_spinner), \
+         patch.object(launcher, "read_jira_token", return_value=None), \
+         patch.object(launcher, "run_jira_setup") as fake_setup:
+        with pytest.raises(SystemExit):
+            launcher.ensure_jira_token()
+
+    assert fake_setup not in spinner_targets
+    assert fake_setup.called
 
 
 # ═══════════════════════════════════════════════════════════════════════════

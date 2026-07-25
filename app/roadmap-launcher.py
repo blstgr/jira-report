@@ -631,16 +631,33 @@ def run_jira_setup():
     print("\nJira is not set up on this computer yet.")
     print("We are going to open the Atlassian setup flow now.")
     print("Follow the prompts in the README-guided setup.")
-    subprocess.run(JIRA_SETUP_CMD, cwd=ROOT, check=True)
+    try:
+        subprocess.run(JIRA_SETUP_CMD, cwd=ROOT, check=True)
+    except subprocess.CalledProcessError as exc:
+        if exc.returncode == 130:
+            raise SystemExit("\nJira setup was cancelled. Run the tool again when you're ready to finish it.")
+        raise SystemExit(
+            f"Jira setup exited before finishing (code {exc.returncode}). Run the tool again to retry."
+        )
+
+
+def _check_existing_jira_token():
+    token = read_jira_token()
+    return token if token and jira_token_is_valid(token) else None
 
 
 def ensure_jira_token():
-    token = read_jira_token()
-    if token and jira_token_is_valid(token):
+    # Only the fast, silent check runs under a spinner. run_jira_setup() hands
+    # off to an INTERACTIVE subprocess (npx @atlassian-dc-mcp/jira setup) that
+    # prints its own prompts and reads the user's answers — a spinner redrawing
+    # over it every 120ms erases those prompts before the user can see or
+    # answer them, making a working setup wizard look like it's just hung.
+    token = run_spinner("Checking Jira setup. Making sure the gears are greased...", _check_existing_jira_token)
+    if token:
         return token
     run_jira_setup()
-    token = read_jira_token()
-    if token and jira_token_is_valid(token):
+    token = run_spinner("Verifying Jira setup...", _check_existing_jira_token)
+    if token:
         return token
     raise SystemExit(
         "Jira setup did not produce a reusable token. Please re-run setup and make sure the token is saved."
@@ -1358,7 +1375,7 @@ def main():
     for value in excludes:
         cmd.extend(["--exclude", value])
 
-    run_spinner("Checking Jira setup. Making sure the gears are greased...", ensure_jira_token)
+    ensure_jira_token()
     if not update_run:
         status_line("Building report...")
     env = os.environ.copy()
