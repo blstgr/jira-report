@@ -704,14 +704,30 @@ def _ensure_openpyxl():
     answer = input("Do you agree to install it? (y/n): ").strip().lower()
     if answer not in ("y", "yes"):
         return False
-    result = run_spinner(
-        "Installing openpyxl...",
-        lambda: subprocess.run([sys.executable, "-m", "pip", "install", "openpyxl"], capture_output=True, text=True),
-    )
+    print("Installing openpyxl...")
+    # Deliberately not captured/spinner-wrapped — pip prints its own live
+    # download progress, and capturing it would just hide that percentage
+    # from the user until the whole thing finished (same reason interactive
+    # subprocesses never get wrapped in our own spinner elsewhere).
+    result = subprocess.run([sys.executable, "-m", "pip", "install", "openpyxl"])
     if result.returncode != 0:
-        print((result.stdout or "") + (result.stderr or ""))
+        print("Couldn't install openpyxl — see the error above.")
         return False
     return True
+
+
+def _persist_jira_host(host):
+    """Save the collected host to settings so future runs (fresh Python
+    processes, no memory of this one) can restore it into os.environ
+    automatically — see main()'s startup — instead of relying on the user
+    manually adding it to their shell profile, which is exactly the step
+    that silently didn't happen and caused this to regress once already."""
+    try:
+        current = load_state()
+        current["jira_host"] = host
+        save_state(current)
+    except Exception:
+        pass  # best-effort — os.environ is already set for this run either way
 
 
 def run_jira_setup():
@@ -725,6 +741,7 @@ def run_jira_setup():
 
     def _finish_setup():
         os.environ["JIRA_HOST"] = host
+        _persist_jira_host(host)
         _write_jira_setup_config(host)
         _store_jira_token_in_keychain(token)
         return _check_jira_reachability(host, token)
@@ -738,7 +755,7 @@ def run_jira_setup():
     if status != "ok":
         raise SystemExit("\nCouldn't confirm Jira is reachable. Run this tool again to retry.")
 
-    print(f"✓ Jira is set up. Add this to your shell profile so future runs remember it:\n    export JIRA_HOST=\"{host}\"")
+    print("✓ Jira is set up. This is saved for future runs — nothing else to do.")
 
 
 def _check_existing_jira_token():
@@ -1143,10 +1160,20 @@ def _send_notification(message: str) -> None:
     )
 
 
+def _restore_jira_host_from_settings(state):
+    """A prior run's os.environ change doesn't carry over to this fresh
+    process, and relying on the user having added JIRA_HOST to their shell
+    profile themselves is exactly what silently didn't happen once already
+    — restore it from settings instead if it's not already set."""
+    if not os.environ.get("JIRA_HOST") and state.get("jira_host"):
+        os.environ["JIRA_HOST"] = state["jira_host"]
+
+
 def main():
     debug = "--debug" in sys.argv[1:]
     from_cache = "--cache" in sys.argv[1:]
     state = load_state()
+    _restore_jira_host_from_settings(state)
     REPORTS_DIR.mkdir(exist_ok=True)
 
     stage = 0

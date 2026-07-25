@@ -10,7 +10,7 @@ import json
 import tempfile
 import shutil
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -342,6 +342,58 @@ def test_write_jira_setup_config_overwrites_existing_file(tmp_path, monkeypatch)
     assert "JIRA_HOST=track.namecheap.net" in config_path.read_text()
 
 
+@pytest.fixture
+def isolated_settings(tmp_path, monkeypatch):
+    settings_dir = tmp_path / "settings"
+    monkeypatch.setattr(launcher, "SETTINGS_DIR", settings_dir)
+    monkeypatch.setattr(launcher, "STATE_PATH", settings_dir / "roadmap-settings.local.json")
+    monkeypatch.setattr(launcher, "SETTINGS_TEMPLATE", settings_dir / "roadmap-settings.json")
+    return settings_dir
+
+
+def test_persist_jira_host_saves_to_settings(isolated_settings):
+    # Regression: a real user's Jira host silently reverted to empty on the
+    # next run because it only ever lived in os.environ for that one
+    # process — this is what makes it survive across fresh runs instead.
+    launcher._persist_jira_host("track.namecheap.net")
+    saved = json.loads((isolated_settings / "roadmap-settings.local.json").read_text())
+    assert saved["jira_host"] == "track.namecheap.net"
+
+
+def test_persist_jira_host_preserves_other_existing_settings(isolated_settings):
+    isolated_settings.mkdir(parents=True, exist_ok=True)
+    (isolated_settings / "roadmap-settings.local.json").write_text(
+        json.dumps({"include": ["Checkout Redesign"], "jira_host": "old-host.example.com"})
+    )
+    launcher._persist_jira_host("track.namecheap.net")
+    saved = json.loads((isolated_settings / "roadmap-settings.local.json").read_text())
+    assert saved["jira_host"] == "track.namecheap.net"
+    assert saved["include"] == ["Checkout Redesign"]
+
+
+def test_persist_jira_host_never_raises_on_failure(monkeypatch):
+    monkeypatch.setattr(launcher, "load_state", MagicMock(side_effect=OSError("disk full")))
+    launcher._persist_jira_host("track.namecheap.net")  # must not raise
+
+
+def test_restore_jira_host_from_settings_when_env_unset(monkeypatch):
+    monkeypatch.delenv("JIRA_HOST", raising=False)
+    launcher._restore_jira_host_from_settings({"jira_host": "track.namecheap.net"})
+    assert launcher.os.environ["JIRA_HOST"] == "track.namecheap.net"
+
+
+def test_restore_jira_host_from_settings_does_not_override_existing_env(monkeypatch):
+    monkeypatch.setenv("JIRA_HOST", "already-set.example.com")
+    launcher._restore_jira_host_from_settings({"jira_host": "track.namecheap.net"})
+    assert launcher.os.environ["JIRA_HOST"] == "already-set.example.com"
+
+
+def test_restore_jira_host_from_settings_no_op_when_nothing_saved(monkeypatch):
+    monkeypatch.delenv("JIRA_HOST", raising=False)
+    launcher._restore_jira_host_from_settings({})
+    assert "JIRA_HOST" not in launcher.os.environ
+
+
 def test_store_jira_token_in_keychain_calls_security_with_update_flag():
     with patch.object(launcher.subprocess, "run") as fake_run:
         launcher._store_jira_token_in_keychain("secret-token-value")
@@ -382,11 +434,13 @@ def test_run_jira_setup_prompts_host_and_token_then_succeeds(monkeypatch):
     monkeypatch.delenv("JIRA_HOST", raising=False)
     with patch("builtins.input", side_effect=["https://track.namecheap.net/browse/X", "my-token"]), \
          patch.object(launcher, "_write_jira_setup_config") as fake_write_config, \
+         patch.object(launcher, "_persist_jira_host") as fake_persist_host, \
          patch.object(launcher, "_store_jira_token_in_keychain") as fake_store_token, \
          patch.object(launcher, "_check_jira_reachability", return_value="ok"):
         launcher.run_jira_setup()
     # The pasted full URL must be trimmed to a bare hostname before use.
     fake_write_config.assert_called_once_with("track.namecheap.net")
+    fake_persist_host.assert_called_once_with("track.namecheap.net")
     fake_store_token.assert_called_once_with("my-token")
     assert launcher.os.environ["JIRA_HOST"] == "track.namecheap.net"
 
@@ -395,6 +449,7 @@ def test_run_jira_setup_unreachable_tells_user_to_connect_vpn(monkeypatch):
     monkeypatch.delenv("JIRA_HOST", raising=False)
     with patch("builtins.input", side_effect=["track.namecheap.net", "my-token"]), \
          patch.object(launcher, "_write_jira_setup_config"), \
+         patch.object(launcher, "_persist_jira_host"), \
          patch.object(launcher, "_store_jira_token_in_keychain"), \
          patch.object(launcher, "_check_jira_reachability", return_value="unreachable"):
         with pytest.raises(SystemExit) as exc_info:
@@ -406,6 +461,7 @@ def test_run_jira_setup_invalid_token_exits_cleanly(monkeypatch):
     monkeypatch.delenv("JIRA_HOST", raising=False)
     with patch("builtins.input", side_effect=["track.namecheap.net", "bad-token"]), \
          patch.object(launcher, "_write_jira_setup_config"), \
+         patch.object(launcher, "_persist_jira_host"), \
          patch.object(launcher, "_store_jira_token_in_keychain"), \
          patch.object(launcher, "_check_jira_reachability", return_value="invalid_token"):
         with pytest.raises(SystemExit) as exc_info:
@@ -431,8 +487,11 @@ def test_ensure_openpyxl_accepted_install_succeeds():
          patch("builtins.input", return_value="y"), \
          patch.object(launcher.subprocess, "run", return_value=success) as fake_run:
         assert launcher._ensure_openpyxl() is True
-    args = fake_run.call_args[0][0]
-    assert args == [launcher.sys.executable, "-m", "pip", "install", "openpyxl"]
+    args, kwargs = fake_run.call_args
+    assert args[0] == [launcher.sys.executable, "-m", "pip", "install", "openpyxl"]
+    # Must NOT be captured — pip's own live download progress should stream
+    # straight to the terminal, not get hidden until the process finishes.
+    assert "capture_output" not in kwargs
 
 
 def test_ensure_openpyxl_accepted_install_fails():

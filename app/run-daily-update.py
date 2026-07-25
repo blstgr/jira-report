@@ -81,9 +81,26 @@ def local_now(tz_name):
     return dt.datetime.now(parse_timezone(tz_name))
 
 
+def _restore_jira_host_from_settings():
+    """Belt-and-suspenders: the installed launchd plist already bakes in
+    JIRA_HOST directly, but if this is ever invoked another way (manually,
+    or an older plist), fall back to whatever roadmap-launcher.py last
+    persisted to settings rather than failing with an empty host."""
+    if os.environ.get("JIRA_HOST"):
+        return
+    try:
+        saved_host = json.loads(STATE.read_text()).get("jira_host")
+    except Exception:
+        saved_host = None
+    if saved_host:
+        os.environ["JIRA_HOST"] = saved_host
+
+
 def main():
     if not STATE.exists():
         return
+
+    _restore_jira_host_from_settings()
 
     _, _, tz_name = load_update_schedule()
     today_key = local_now(tz_name).strftime("%Y-%m-%d")

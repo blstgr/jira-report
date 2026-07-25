@@ -105,3 +105,24 @@ def test_ensure_openpyxl_missing_install_fails_returns_false():
     with patch.object(rdu, "_openpyxl_importable", return_value=False), \
          patch.object(rdu.subprocess, "run", return_value=fail):
         assert rdu._ensure_openpyxl() is False
+
+
+def test_restore_jira_host_from_settings_when_env_unset(state_file, monkeypatch):
+    monkeypatch.delenv("JIRA_HOST", raising=False)
+    rdu.STATE = state_file(jira_host="track.namecheap.net")
+    rdu._restore_jira_host_from_settings()
+    assert rdu.os.environ["JIRA_HOST"] == "track.namecheap.net"
+
+
+def test_restore_jira_host_from_settings_does_not_override_existing_env(state_file, monkeypatch):
+    monkeypatch.setenv("JIRA_HOST", "already-set.example.com")
+    rdu.STATE = state_file(jira_host="track.namecheap.net")
+    rdu._restore_jira_host_from_settings()
+    assert rdu.os.environ["JIRA_HOST"] == "already-set.example.com"
+
+
+def test_restore_jira_host_from_settings_handles_missing_or_bad_state(monkeypatch, tmp_path):
+    monkeypatch.delenv("JIRA_HOST", raising=False)
+    rdu.STATE = tmp_path / "does-not-exist.json"
+    rdu._restore_jira_host_from_settings()  # must not raise
+    assert "JIRA_HOST" not in rdu.os.environ
