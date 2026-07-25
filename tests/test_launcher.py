@@ -39,7 +39,7 @@ def _isolate_atlassian_dc_mcp_config(tmp_path, monkeypatch):
 TEMPLATE_CONTENT = json.dumps({
     "features": [{"keyword": "Your feature name or epic keyword", "eta": "2026-01-01", "expected_pace": 5}],
     "exclude": ["keyword to exclude"],
-    "project_keys": ["SSLP"],
+    "project_keys": ["ABC"],
     "output": "report/roadmap 2026.xlsx",
     "drive_folder": "",
     "google_client_secrets": "app/google-oauth-client-secrets.json",
@@ -52,7 +52,7 @@ TEMPLATE_CONTENT = json.dumps({
 REAL_SETTINGS = json.dumps({
     "features": [{"keyword": "CA switch", "eta": "2026-07-11"}],
     "exclude": [],
-    "project_keys": ["SSLP"],
+    "project_keys": ["ABC"],
     "output": "report/roadmap 2026.xlsx",
     "drive_folder": "",
     "local_only": True,
@@ -304,15 +304,15 @@ def test_detect_system_timezone_falls_back_to_utc_offset():
 
 
 def test_trim_to_hostname_bare_hostname_unchanged():
-    assert launcher._trim_to_hostname("track.namecheap.net") == "track.namecheap.net"
+    assert launcher._trim_to_hostname("track.example.com") == "track.example.com"
 
 
 def test_trim_to_hostname_strips_scheme_and_path():
-    assert launcher._trim_to_hostname("https://track.namecheap.net/browse/SSLP-123") == "track.namecheap.net"
+    assert launcher._trim_to_hostname("https://track.example.com/browse/ABC-123") == "track.example.com"
 
 
 def test_trim_to_hostname_strips_query_string_via_path_split():
-    assert launcher._trim_to_hostname("https://track.namecheap.net/secure/Dashboard.jspa?x=1") == "track.namecheap.net"
+    assert launcher._trim_to_hostname("https://track.example.com/secure/Dashboard.jspa?x=1") == "track.example.com"
 
 
 def test_trim_to_hostname_empty_input():
@@ -323,9 +323,9 @@ def test_trim_to_hostname_empty_input():
 def test_write_jira_setup_config_writes_all_three_fields(tmp_path, monkeypatch):
     config_path = tmp_path / ".atlassian-dc-mcp" / "jira.env"
     monkeypatch.setattr(launcher, "_ATLASSIAN_DC_MCP_CONFIG", config_path)
-    launcher._write_jira_setup_config("track.namecheap.net")
+    launcher._write_jira_setup_config("track.example.com")
     content = config_path.read_text()
-    assert "JIRA_HOST=track.namecheap.net" in content
+    assert "JIRA_HOST=track.example.com" in content
     assert "JIRA_API_BASE_PATH=/rest" in content
     assert "JIRA_DEFAULT_PAGE_SIZE=25" in content
 
@@ -338,8 +338,8 @@ def test_write_jira_setup_config_overwrites_existing_file(tmp_path, monkeypatch)
     config_path.parent.mkdir(parents=True)
     config_path.write_text("JIRA_HOST=some-other-host.example.com\n")
     monkeypatch.setattr(launcher, "_ATLASSIAN_DC_MCP_CONFIG", config_path)
-    launcher._write_jira_setup_config("track.namecheap.net")
-    assert "JIRA_HOST=track.namecheap.net" in config_path.read_text()
+    launcher._write_jira_setup_config("track.example.com")
+    assert "JIRA_HOST=track.example.com" in config_path.read_text()
 
 
 @pytest.fixture
@@ -355,9 +355,9 @@ def test_persist_jira_host_saves_to_settings(isolated_settings):
     # Regression: a real user's Jira host silently reverted to empty on the
     # next run because it only ever lived in os.environ for that one
     # process — this is what makes it survive across fresh runs instead.
-    launcher._persist_jira_host("track.namecheap.net")
+    launcher._persist_jira_host("track.example.com")
     saved = json.loads((isolated_settings / "roadmap-settings.local.json").read_text())
-    assert saved["jira_host"] == "track.namecheap.net"
+    assert saved["jira_host"] == "track.example.com"
 
 
 def test_persist_jira_host_preserves_other_existing_settings(isolated_settings):
@@ -365,32 +365,76 @@ def test_persist_jira_host_preserves_other_existing_settings(isolated_settings):
     (isolated_settings / "roadmap-settings.local.json").write_text(
         json.dumps({"include": ["Checkout Redesign"], "jira_host": "old-host.example.com"})
     )
-    launcher._persist_jira_host("track.namecheap.net")
+    launcher._persist_jira_host("track.example.com")
     saved = json.loads((isolated_settings / "roadmap-settings.local.json").read_text())
-    assert saved["jira_host"] == "track.namecheap.net"
+    assert saved["jira_host"] == "track.example.com"
     assert saved["include"] == ["Checkout Redesign"]
 
 
 def test_persist_jira_host_never_raises_on_failure(monkeypatch):
     monkeypatch.setattr(launcher, "load_state", MagicMock(side_effect=OSError("disk full")))
-    launcher._persist_jira_host("track.namecheap.net")  # must not raise
+    launcher._persist_jira_host("track.example.com")  # must not raise
 
 
 def test_restore_jira_host_from_settings_when_env_unset(monkeypatch):
     monkeypatch.delenv("JIRA_HOST", raising=False)
-    launcher._restore_jira_host_from_settings({"jira_host": "track.namecheap.net"})
-    assert launcher.os.environ["JIRA_HOST"] == "track.namecheap.net"
+    launcher._restore_jira_host_from_settings({"jira_host": "track.example.com"})
+    assert launcher.os.environ["JIRA_HOST"] == "track.example.com"
 
 
 def test_restore_jira_host_from_settings_does_not_override_existing_env(monkeypatch):
     monkeypatch.setenv("JIRA_HOST", "already-set.example.com")
-    launcher._restore_jira_host_from_settings({"jira_host": "track.namecheap.net"})
+    launcher._restore_jira_host_from_settings({"jira_host": "track.example.com"})
     assert launcher.os.environ["JIRA_HOST"] == "already-set.example.com"
 
 
 def test_restore_jira_host_from_settings_no_op_when_nothing_saved(monkeypatch):
     monkeypatch.delenv("JIRA_HOST", raising=False)
     launcher._restore_jira_host_from_settings({})
+    assert "JIRA_HOST" not in launcher.os.environ
+
+
+def test_restore_jira_host_from_external_config_when_settings_missing(tmp_path, monkeypatch):
+    # Regression: settings/roadmap-settings.local.json lives inside the
+    # project folder, so deleting/re-cloning the project wipes it. The
+    # Keychain-stored token survives that untouched, but without this
+    # fallback JIRA_HOST had nowhere left to come from, so a still-valid
+    # token got treated as "not set up" and the user was asked to redo
+    # setup for no reason. ~/.atlassian-dc-mcp/jira.env lives outside the
+    # project folder and survives the same way Keychain does.
+    monkeypatch.delenv("JIRA_HOST", raising=False)
+    config_path = tmp_path / ".atlassian-dc-mcp" / "jira.env"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("JIRA_HOST=track.example.com\nJIRA_API_BASE_PATH=/rest\n")
+    monkeypatch.setattr(launcher, "_ATLASSIAN_DC_MCP_CONFIG", config_path)
+    launcher._restore_jira_host_from_external_config()
+    assert launcher.os.environ["JIRA_HOST"] == "track.example.com"
+
+
+def test_restore_jira_host_from_external_config_does_not_override_existing_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("JIRA_HOST", "already-set.example.com")
+    config_path = tmp_path / ".atlassian-dc-mcp" / "jira.env"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("JIRA_HOST=track.example.com\n")
+    monkeypatch.setattr(launcher, "_ATLASSIAN_DC_MCP_CONFIG", config_path)
+    launcher._restore_jira_host_from_external_config()
+    assert launcher.os.environ["JIRA_HOST"] == "already-set.example.com"
+
+
+def test_restore_jira_host_from_external_config_no_op_when_file_missing(tmp_path, monkeypatch):
+    monkeypatch.delenv("JIRA_HOST", raising=False)
+    monkeypatch.setattr(launcher, "_ATLASSIAN_DC_MCP_CONFIG", tmp_path / "does-not-exist" / "jira.env")
+    launcher._restore_jira_host_from_external_config()
+    assert "JIRA_HOST" not in launcher.os.environ
+
+
+def test_restore_jira_host_from_external_config_no_op_when_line_missing(tmp_path, monkeypatch):
+    monkeypatch.delenv("JIRA_HOST", raising=False)
+    config_path = tmp_path / ".atlassian-dc-mcp" / "jira.env"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("JIRA_API_BASE_PATH=/rest\n")
+    monkeypatch.setattr(launcher, "_ATLASSIAN_DC_MCP_CONFIG", config_path)
+    launcher._restore_jira_host_from_external_config()
     assert "JIRA_HOST" not in launcher.os.environ
 
 
@@ -408,13 +452,13 @@ def test_check_jira_reachability_ok():
     with patch.object(launcher.urllib.request, "urlopen") as fake_urlopen:
         fake_urlopen.return_value.__enter__ = lambda self: ok_response
         fake_urlopen.return_value.__exit__ = lambda *a: False
-        assert launcher._check_jira_reachability("track.namecheap.net", "tok") == "ok"
+        assert launcher._check_jira_reachability("track.example.com", "tok") == "ok"
 
 
 def test_check_jira_reachability_invalid_token():
     with patch.object(launcher.urllib.request, "urlopen",
                        side_effect=launcher.urllib.error.HTTPError("url", 401, "unauthorized", {}, None)):
-        assert launcher._check_jira_reachability("track.namecheap.net", "bad-tok") == "invalid_token"
+        assert launcher._check_jira_reachability("track.example.com", "bad-tok") == "invalid_token"
 
 
 def test_check_jira_reachability_unreachable_means_vpn():
@@ -423,7 +467,7 @@ def test_check_jira_reachability_unreachable_means_vpn():
     # tool. Our own check must clearly distinguish it from a bad token.
     with patch.object(launcher.urllib.request, "urlopen",
                        side_effect=launcher.urllib.error.URLError("timed out")):
-        assert launcher._check_jira_reachability("track.namecheap.net", "tok") == "unreachable"
+        assert launcher._check_jira_reachability("track.example.com", "tok") == "unreachable"
 
 
 def test_run_jira_setup_prompts_host_and_token_then_succeeds(monkeypatch):
@@ -432,22 +476,22 @@ def test_run_jira_setup_prompts_host_and_token_then_succeeds(monkeypatch):
     # mutates os.environ directly (not through monkeypatch) — otherwise
     # this test would leak JIRA_HOST into every test that runs after it.
     monkeypatch.delenv("JIRA_HOST", raising=False)
-    with patch("builtins.input", side_effect=["https://track.namecheap.net/browse/X", "my-token"]), \
+    with patch("builtins.input", side_effect=["https://track.example.com/browse/X", "my-token"]), \
          patch.object(launcher, "_write_jira_setup_config") as fake_write_config, \
          patch.object(launcher, "_persist_jira_host") as fake_persist_host, \
          patch.object(launcher, "_store_jira_token_in_keychain") as fake_store_token, \
          patch.object(launcher, "_check_jira_reachability", return_value="ok"):
         launcher.run_jira_setup()
     # The pasted full URL must be trimmed to a bare hostname before use.
-    fake_write_config.assert_called_once_with("track.namecheap.net")
-    fake_persist_host.assert_called_once_with("track.namecheap.net")
+    fake_write_config.assert_called_once_with("track.example.com")
+    fake_persist_host.assert_called_once_with("track.example.com")
     fake_store_token.assert_called_once_with("my-token")
-    assert launcher.os.environ["JIRA_HOST"] == "track.namecheap.net"
+    assert launcher.os.environ["JIRA_HOST"] == "track.example.com"
 
 
 def test_run_jira_setup_unreachable_tells_user_to_connect_vpn(monkeypatch):
     monkeypatch.delenv("JIRA_HOST", raising=False)
-    with patch("builtins.input", side_effect=["track.namecheap.net", "my-token"]), \
+    with patch("builtins.input", side_effect=["track.example.com", "my-token"]), \
          patch.object(launcher, "_write_jira_setup_config"), \
          patch.object(launcher, "_persist_jira_host"), \
          patch.object(launcher, "_store_jira_token_in_keychain"), \
@@ -459,7 +503,7 @@ def test_run_jira_setup_unreachable_tells_user_to_connect_vpn(monkeypatch):
 
 def test_run_jira_setup_invalid_token_exits_cleanly(monkeypatch):
     monkeypatch.delenv("JIRA_HOST", raising=False)
-    with patch("builtins.input", side_effect=["track.namecheap.net", "bad-token"]), \
+    with patch("builtins.input", side_effect=["track.example.com", "bad-token"]), \
          patch.object(launcher, "_write_jira_setup_config"), \
          patch.object(launcher, "_persist_jira_host"), \
          patch.object(launcher, "_store_jira_token_in_keychain"), \
@@ -548,7 +592,7 @@ def test_run_streaming_and_capture_relays_output_and_returncode():
     # to the terminal and vanish — nothing captured them for the crash log.
     # This is what makes that possible: live-relay AND capture at once.
     proc = MagicMock()
-    proc.stdout = [b"line one\n", b"line two\n"]
+    proc.stdout.read1.side_effect = [b"line one\n", b"line two\n", b""]
     proc.returncode = 1
     with patch.object(launcher.subprocess, "Popen", return_value=proc) as fake_popen:
         returncode, captured = launcher._run_streaming_and_capture(["cmd"], "/some/cwd", {"X": "1"})
@@ -559,6 +603,67 @@ def test_run_streaming_and_capture_relays_output_and_returncode():
     assert returncode == 1
     assert captured == "line one\nline two\n"
     proc.wait.assert_called_once()
+
+
+def test_run_streaming_and_capture_relays_bare_carriage_return_chunks():
+    # Regression: jira-report.py's own spinner redraws a line with a bare
+    # "\r" (no trailing "\n") between frames. The old implementation read
+    # `for line in proc.stdout`, which blocks until a "\n" — so those spinner
+    # frames sat invisible in the pipe until the next newline-terminated
+    # write flushed them all at once, reading as a freeze. read1() must
+    # relay each chunk as it arrives, "\n" or not.
+    proc = MagicMock()
+    proc.stdout.read1.side_effect = [b"\r\x1b[2K\xe2\x97\x90 spinning...", b"\r\x1b[2K\xe2\x9c\x93 done\n", b""]
+    proc.returncode = 0
+    with patch.object(launcher.subprocess, "Popen", return_value=proc):
+        returncode, captured = launcher._run_streaming_and_capture(["cmd"], "/some/cwd", {})
+    assert returncode == 0
+    assert "spinning..." in captured
+    assert "done" in captured
+
+
+def test_run_streaming_and_capture_shows_startup_spinner_until_first_output(monkeypatch):
+    # "Building report..." used to be a one-off print before handing off to
+    # the subprocess — if the subprocess takes a moment before printing
+    # anything of its own (interpreter start, connecting to Jira), the
+    # terminal just sits blank. A startup_message spinners that gap instead.
+    import time as _time
+
+    proc = MagicMock()
+
+    def _delayed_first_chunk(*_a, **_kw):
+        _time.sleep(0.05)  # give the animate thread (0.12s tick) a chance to draw at least once
+        proc.stdout.read1.side_effect = [b""]
+        return b"first real output\n"
+
+    proc.stdout.read1.side_effect = _delayed_first_chunk
+    proc.returncode = 0
+    animated = []
+    monkeypatch.setattr(
+        launcher, "spinner_line",
+        lambda symbol, message: animated.append(message) or f"\r{symbol} {message}"
+    )
+    with patch.object(launcher.subprocess, "Popen", return_value=proc):
+        returncode, captured = launcher._run_streaming_and_capture(
+            ["cmd"], "/some/cwd", {}, startup_message="Building report..."
+        )
+    assert returncode == 0
+    assert "first real output" in captured
+    assert any("Building report..." in m for m in animated)
+
+
+def test_run_streaming_and_capture_no_startup_spinner_when_message_omitted(monkeypatch):
+    proc = MagicMock()
+    proc.stdout.read1.side_effect = [b"output\n", b""]
+    proc.returncode = 0
+    animated = []
+    monkeypatch.setattr(
+        launcher, "spinner_line",
+        lambda symbol, message: animated.append(message) or f"\r{symbol} {message}"
+    )
+    with patch.object(launcher.subprocess, "Popen", return_value=proc):
+        launcher._run_streaming_and_capture(["cmd"], "/some/cwd", {})
+    assert animated == []
 
 
 def test_jira_token_is_valid_returns_false_when_host_is_empty(monkeypatch):
@@ -577,7 +682,7 @@ def test_jira_token_is_valid_still_optimistic_on_genuine_network_error(monkeypat
     # real VPN/network hiccup with a host actually configured should still
     # optimistically assume the token is fine (existing, intentional
     # behavior elsewhere relies on this).
-    monkeypatch.setenv("JIRA_HOST", "track.namecheap.net")
+    monkeypatch.setenv("JIRA_HOST", "track.example.com")
     with patch.object(launcher.urllib.request, "urlopen", side_effect=launcher.urllib.error.URLError("timed out")):
         assert launcher.jira_token_is_valid("some-token") is True
 

@@ -912,17 +912,53 @@ def save_draft_state(include_keywords=None, excludes=None, project_keys=None, ou
     save_state(current)
 
 
-def _run_streaming_and_capture(cmd, cwd, env):
-    """Run cmd, printing its combined stdout+stderr live line-by-line (so
-    jira-report.py's own progress spinner still shows immediately) while
-    also capturing everything, so it can be saved to the crash log if the
-    process fails with something we don't already handle explicitly."""
+def _run_streaming_and_capture(cmd, cwd, env, startup_message=None):
+    """Run cmd, relaying its combined stdout+stderr live while also capturing
+    everything, so it can be saved to the crash log if the process fails with
+    something we don't already handle explicitly.
+
+    Reads with read1() rather than iterating by line: jira-report.py's own
+    spinner redraws a line with a bare \\r (no trailing \\n) between frames,
+    and `for line in proc.stdout` blocks until it sees a \\n — so the spinner
+    frames would sit invisible in the pipe until the next newline-terminated
+    write (a "✓ ..." line) flushed them all at once, reading as a freeze.
+
+    If startup_message is given, a spinner shows it until the subprocess's
+    first byte of output arrives, covering the silent gap while the child
+    process starts up and connects before it prints anything of its own.
+    """
     buf = []
     proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    for line in proc.stdout:
-        sys.stdout.buffer.write(line)
+
+    stop = threading.Event()
+    first_chunk = threading.Event()
+    thread = None
+    if startup_message:
+        def animate():
+            idx = 0
+            while not stop.is_set() and not first_chunk.is_set():
+                sys.stdout.write(spinner_line(SYMBOLS[idx % len(SYMBOLS)], startup_message))
+                sys.stdout.flush()
+                idx += 1
+                stop.wait(0.12)
+
+        thread = threading.Thread(target=animate, daemon=True)
+        thread.start()
+
+    while True:
+        chunk = proc.stdout.read1(4096)
+        if not chunk:
+            break
+        if not first_chunk.is_set():
+            first_chunk.set()
+            if thread:
+                thread.join(timeout=1)
+        sys.stdout.buffer.write(chunk)
         sys.stdout.buffer.flush()
-        buf.append(line.decode(errors="replace"))
+        buf.append(chunk.decode(errors="replace"))
+    stop.set()
+    if thread:
+        thread.join(timeout=1)
     proc.wait()
     return proc.returncode, "".join(buf)
 
@@ -1192,11 +1228,34 @@ def _restore_jira_host_from_settings(state):
         os.environ["JIRA_HOST"] = state["jira_host"]
 
 
+def _restore_jira_host_from_external_config():
+    """settings/roadmap-settings.local.json lives inside the project folder,
+    so deleting/re-cloning the project wipes it — but the Jira token in
+    Keychain survives that untouched, since Keychain isn't tied to any
+    folder. Without this fallback, a still-valid token gets treated as "not
+    set up" purely because JIRA_HOST has nowhere left to come from, and the
+    user is asked to redo setup for no reason. ~/.atlassian-dc-mcp/jira.env
+    lives outside the project folder (see _write_jira_setup_config), so it
+    survives a project folder deletion the same way Keychain does."""
+    if os.environ.get("JIRA_HOST"):
+        return
+    try:
+        for line in _ATLASSIAN_DC_MCP_CONFIG.read_text().splitlines():
+            if line.startswith("JIRA_HOST="):
+                host = line.split("=", 1)[1].strip()
+                if host:
+                    os.environ["JIRA_HOST"] = host
+                return
+    except Exception:
+        pass  # best-effort — a missing/unreadable file just means no fallback available
+
+
 def main():
     debug = "--debug" in sys.argv[1:]
     from_cache = "--cache" in sys.argv[1:]
     state = load_state()
     _restore_jira_host_from_settings(state)
+    _restore_jira_host_from_external_config()
     REPORTS_DIR.mkdir(exist_ok=True)
 
     stage = 0
@@ -1545,14 +1604,13 @@ def main():
             f"openpyxl is required to build the report. Install it yourself with:\n"
             f"    {sys.executable} -m pip install openpyxl\nthen run this tool again."
         )
-    if not update_run:
-        status_line("Building report...")
+    startup_message = "Checking Jira for updates..." if update_run else "Building report..."
     env = os.environ.copy()
     jira_token = read_jira_token()
     if jira_token:
         env["JIRA_TOKEN"] = jira_token
     try:
-        returncode, _proc_out = _run_streaming_and_capture(cmd, ROOT, env)
+        returncode, _proc_out = _run_streaming_and_capture(cmd, ROOT, env, startup_message=startup_message)
         result = type("R", (), {"returncode": returncode})()
     except KeyboardInterrupt:
         raise SystemExit(0)
@@ -1581,7 +1639,7 @@ def main():
         if jira_token:
             env["JIRA_TOKEN"] = jira_token
         try:
-            returncode, _proc_out = _run_streaming_and_capture(cmd, ROOT, env)
+            returncode, _proc_out = _run_streaming_and_capture(cmd, ROOT, env, startup_message=startup_message)
             result = type("R", (), {"returncode": returncode})()
         except KeyboardInterrupt:
             raise SystemExit(0)

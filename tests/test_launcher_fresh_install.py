@@ -66,6 +66,11 @@ def sandboxed_launcher(tmp_path, monkeypatch):
     monkeypatch.setattr(launcher, "STATE_PATH", settings_dir / "roadmap-settings.local.json")
     monkeypatch.setattr(launcher, "REPORTS_DIR", reports_dir)
 
+    # Never let this test read (or, via main()'s JIRA_HOST fallback, mutate
+    # os.environ from) the real machine's ~/.atlassian-dc-mcp/jira.env.
+    monkeypatch.setattr(launcher, "_ATLASSIAN_DC_MCP_CONFIG", tmp_path / "does-not-exist" / "jira.env")
+    monkeypatch.delenv("JIRA_HOST", raising=False)
+
     # Jira token/setup requires real keychain + network — not what this test
     # is verifying (that's test_install_launchd.py's job for the scheduler
     # side); a fresh install must reach this point without crashing first.
@@ -75,7 +80,7 @@ def sandboxed_launcher(tmp_path, monkeypatch):
     # jira-report.py invocation (Drive sync and auto-update are both
     # declined below, so their subprocess calls are never made). Return the
     # "ran fine, nothing changed" exit code so main() completes normally.
-    monkeypatch.setattr(launcher, "_run_streaming_and_capture", lambda cmd, cwd, env: (88, ""))
+    monkeypatch.setattr(launcher, "_run_streaming_and_capture", lambda cmd, cwd, env, **kw: (88, ""))
 
     return launcher, settings_dir
 
@@ -104,9 +109,9 @@ def test_fresh_install_writes_settings_without_any_hardcoded_company_default(san
     assert written["local_only"] is True
     assert written["auto_update"] is False
 
-    # The whole point: nothing about Namecheap ever appears anywhere in what
+    # The whole point: nothing about Example ever appears anywhere in what
     # a brand-new user's fresh install produces.
     dump = json.dumps(written).lower()
-    assert "namecheap" not in dump
-    assert "sslp" not in dump
+    assert "example" not in dump
+    assert "abc" not in dump
     assert "ca switch" not in dump

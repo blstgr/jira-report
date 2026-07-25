@@ -152,13 +152,13 @@ def _make_issue(key, summary="test", status="In Progress", changelog=None):
 
 
 def test_project_keys_filter_passes_matching():
-    jr.PROJECT_KEYS = ["SSLP"]
-    rows = jr.issue_rows(_make_issue("SSLP-123"), "feat", "epic", "epic", [])
+    jr.PROJECT_KEYS = ["ABC"]
+    rows = jr.issue_rows(_make_issue("ABC-123"), "feat", "epic", "epic", [])
     assert isinstance(rows, list)  # not filtered out (may be empty due to no events, but not skipped)
 
 
 def test_project_keys_filter_blocks_other_project():
-    jr.PROJECT_KEYS = ["SSLP"]
+    jr.PROJECT_KEYS = ["ABC"]
     rows = jr.issue_rows(_make_issue("OTHER-456"), "feat", "epic", "epic", [])
     assert rows == []
 
@@ -171,11 +171,11 @@ def test_project_keys_filter_empty_accepts_all():
 
 
 def test_project_keys_multiple_allowed():
-    jr.PROJECT_KEYS = ["SSLP", "OTHER"]
-    rows_sslp = jr.issue_rows(_make_issue("SSLP-1"), "feat", "epic", "epic", [])
+    jr.PROJECT_KEYS = ["ABC", "OTHER"]
+    rows_abc = jr.issue_rows(_make_issue("ABC-1"), "feat", "epic", "epic", [])
     rows_other = jr.issue_rows(_make_issue("OTHER-1"), "feat", "epic", "epic", [])
     rows_blocked = jr.issue_rows(_make_issue("BLOCKED-1"), "feat", "epic", "epic", [])
-    assert isinstance(rows_sslp, list)
+    assert isinstance(rows_abc, list)
     assert isinstance(rows_other, list)
     assert rows_blocked == []
 
@@ -187,7 +187,7 @@ def _fields_with_project(name="", key=""):
 
 
 def test_project_matches_by_key():
-    assert jr.project_matches_selector(_fields_with_project(key="SSLP"), "sslp")
+    assert jr.project_matches_selector(_fields_with_project(key="ABC"), "abc")
 
 
 def test_project_matches_by_name():
@@ -195,7 +195,7 @@ def test_project_matches_by_name():
 
 
 def test_project_no_match():
-    assert not jr.project_matches_selector(_fields_with_project(name="Other", key="OTH"), "sslp")
+    assert not jr.project_matches_selector(_fields_with_project(name="Other", key="OTH"), "abc")
 
 
 # ── parse_date ─────────────────────────────────────────────────────────────
@@ -270,7 +270,7 @@ def _issue_with_events(key, events, current_status="Done", resolution="2024-06-0
 
 def test_issue_rows_no_events_returns_blank_row():
     jr.PROJECT_KEYS = []
-    issue = _issue_with_events("SSLP-1", [], current_status="To Do", resolution=None)
+    issue = _issue_with_events("ABC-1", [], current_status="To Do", resolution=None)
     rows = jr.issue_rows(issue, "feat", "epic", "epic", [])
     assert len(rows) == 1
     assert rows[0]["Status"] == ""
@@ -278,7 +278,7 @@ def test_issue_rows_no_events_returns_blank_row():
 
 def test_issue_rows_simple_done_task():
     jr.PROJECT_KEYS = []
-    issue = _issue_with_events("SSLP-2", [
+    issue = _issue_with_events("ABC-2", [
         _history("2024-03-01", "To Do", "In Progress", "1"),
         _history("2024-06-01", "In Progress", "Done", "2"),
     ], current_status="Done", resolution="2024-06-01")
@@ -290,7 +290,7 @@ def test_issue_rows_simple_done_task():
 
 def test_issue_rows_on_hold_task():
     jr.PROJECT_KEYS = []
-    issue = _issue_with_events("SSLP-3", [
+    issue = _issue_with_events("ABC-3", [
         _history("2024-03-01", "To Do", "In Progress", "1"),
         _history("2024-04-01", "In Progress", "Track/Blocked/On Hold", "2"),
         _history("2024-05-01", "Track/Blocked/On Hold", "In Progress", "3"),
@@ -303,7 +303,7 @@ def test_issue_rows_on_hold_task():
 
 def test_issue_rows_rejected_task():
     jr.PROJECT_KEYS = []
-    issue = _issue_with_events("SSLP-4", [
+    issue = _issue_with_events("ABC-4", [
         _history("2024-03-01", "To Do", "In Progress", "1"),
         _history("2024-04-01", "In Progress", "Rejected", "2"),
     ], current_status="Rejected", resolution=None)

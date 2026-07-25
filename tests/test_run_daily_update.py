@@ -109,14 +109,14 @@ def test_ensure_openpyxl_missing_install_fails_returns_false():
 
 def test_restore_jira_host_from_settings_when_env_unset(state_file, monkeypatch):
     monkeypatch.delenv("JIRA_HOST", raising=False)
-    rdu.STATE = state_file(jira_host="track.namecheap.net")
+    rdu.STATE = state_file(jira_host="track.example.com")
     rdu._restore_jira_host_from_settings()
-    assert rdu.os.environ["JIRA_HOST"] == "track.namecheap.net"
+    assert rdu.os.environ["JIRA_HOST"] == "track.example.com"
 
 
 def test_restore_jira_host_from_settings_does_not_override_existing_env(state_file, monkeypatch):
     monkeypatch.setenv("JIRA_HOST", "already-set.example.com")
-    rdu.STATE = state_file(jira_host="track.namecheap.net")
+    rdu.STATE = state_file(jira_host="track.example.com")
     rdu._restore_jira_host_from_settings()
     assert rdu.os.environ["JIRA_HOST"] == "already-set.example.com"
 
@@ -125,4 +125,34 @@ def test_restore_jira_host_from_settings_handles_missing_or_bad_state(monkeypatc
     monkeypatch.delenv("JIRA_HOST", raising=False)
     rdu.STATE = tmp_path / "does-not-exist.json"
     rdu._restore_jira_host_from_settings()  # must not raise
+    assert "JIRA_HOST" not in rdu.os.environ
+
+
+def test_restore_jira_host_from_external_config_when_settings_missing(tmp_path, monkeypatch):
+    # Same fallback as roadmap-launcher.py's version: settings live inside
+    # the project folder and get wiped by a re-clone, but this file lives
+    # under the user's home directory and survives that.
+    monkeypatch.delenv("JIRA_HOST", raising=False)
+    config_path = tmp_path / ".atlassian-dc-mcp" / "jira.env"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("JIRA_HOST=track.example.com\n")
+    monkeypatch.setattr(rdu, "_ATLASSIAN_DC_MCP_CONFIG", config_path)
+    rdu._restore_jira_host_from_external_config()
+    assert rdu.os.environ["JIRA_HOST"] == "track.example.com"
+
+
+def test_restore_jira_host_from_external_config_does_not_override_existing_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("JIRA_HOST", "already-set.example.com")
+    config_path = tmp_path / ".atlassian-dc-mcp" / "jira.env"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("JIRA_HOST=track.example.com\n")
+    monkeypatch.setattr(rdu, "_ATLASSIAN_DC_MCP_CONFIG", config_path)
+    rdu._restore_jira_host_from_external_config()
+    assert rdu.os.environ["JIRA_HOST"] == "already-set.example.com"
+
+
+def test_restore_jira_host_from_external_config_no_op_when_file_missing(tmp_path, monkeypatch):
+    monkeypatch.delenv("JIRA_HOST", raising=False)
+    monkeypatch.setattr(rdu, "_ATLASSIAN_DC_MCP_CONFIG", tmp_path / "does-not-exist" / "jira.env")
+    rdu._restore_jira_host_from_external_config()
     assert "JIRA_HOST" not in rdu.os.environ

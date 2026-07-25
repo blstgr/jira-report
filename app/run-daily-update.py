@@ -21,6 +21,7 @@ _LOCAL = _SETTINGS_DIR / "roadmap-settings.local.json"
 _TEMPLATE = _SETTINGS_DIR / "roadmap-settings.json"
 STATE = _LOCAL if _LOCAL.exists() else _TEMPLATE
 STAMP = ROOT / ".last-daily-run-utc"
+_ATLASSIAN_DC_MCP_CONFIG = Path.home() / ".atlassian-dc-mcp" / "jira.env"
 
 
 def _openpyxl_importable():
@@ -96,11 +97,30 @@ def _restore_jira_host_from_settings():
         os.environ["JIRA_HOST"] = saved_host
 
 
+def _restore_jira_host_from_external_config():
+    """Settings live inside the project folder and get wiped by a project
+    re-clone; ~/.atlassian-dc-mcp/jira.env lives outside it and survives
+    that, the same way the Keychain-stored token does — same reasoning as
+    roadmap-launcher.py's own version of this fallback."""
+    if os.environ.get("JIRA_HOST"):
+        return
+    try:
+        for line in _ATLASSIAN_DC_MCP_CONFIG.read_text().splitlines():
+            if line.startswith("JIRA_HOST="):
+                host = line.split("=", 1)[1].strip()
+                if host:
+                    os.environ["JIRA_HOST"] = host
+                return
+    except Exception:
+        pass
+
+
 def main():
     if not STATE.exists():
         return
 
     _restore_jira_host_from_settings()
+    _restore_jira_host_from_external_config()
 
     _, _, tz_name = load_update_schedule()
     today_key = local_now(tz_name).strftime("%Y-%m-%d")
