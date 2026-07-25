@@ -27,6 +27,15 @@ spec = importlib.util.spec_from_file_location("launcher", APP_DIR / "roadmap-lau
 launcher = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(launcher)
 
+
+@pytest.fixture(autouse=True)
+def _isolate_atlassian_dc_mcp_config(tmp_path, monkeypatch):
+    # run_jira_setup() calls _preseed_jira_setup_config(), which writes to
+    # this path if absent — never let any test touch the real home
+    # directory's copy, regardless of whether that specific test cares
+    # about pre-seeding.
+    monkeypatch.setattr(launcher, "_ATLASSIAN_DC_MCP_CONFIG", tmp_path / ".atlassian-dc-mcp" / "jira.env")
+
 TEMPLATE_CONTENT = json.dumps({
     "features": [{"keyword": "Your feature name or epic keyword", "eta": "2026-01-01", "expected_pace": 5}],
     "exclude": ["keyword to exclude"],
@@ -292,6 +301,51 @@ def test_detect_system_timezone_falls_back_to_utc_offset():
          patch.object(launcher.dt, "datetime") as fake_datetime:
         fake_datetime.now.return_value.astimezone.return_value = fake_now
         assert launcher._detect_system_timezone() == "+03:00"
+
+
+def test_trim_to_hostname_bare_hostname_unchanged():
+    assert launcher._trim_to_hostname("track.namecheap.net") == "track.namecheap.net"
+
+
+def test_trim_to_hostname_strips_scheme_and_path():
+    assert launcher._trim_to_hostname("https://track.namecheap.net/browse/SSLP-123") == "track.namecheap.net"
+
+
+def test_trim_to_hostname_strips_query_string_via_path_split():
+    assert launcher._trim_to_hostname("https://track.namecheap.net/secure/Dashboard.jspa?x=1") == "track.namecheap.net"
+
+
+def test_trim_to_hostname_empty_input():
+    assert launcher._trim_to_hostname("") == ""
+    assert launcher._trim_to_hostname(None) == ""
+
+
+def test_preseed_jira_setup_config_writes_when_absent(tmp_path, monkeypatch):
+    config_path = tmp_path / ".atlassian-dc-mcp" / "jira.env"
+    monkeypatch.setattr(launcher, "_ATLASSIAN_DC_MCP_CONFIG", config_path)
+    monkeypatch.setattr(launcher.os, "environ", {"JIRA_HOST": "https://track.namecheap.net/browse/X"})
+    launcher._preseed_jira_setup_config()
+    content = config_path.read_text()
+    assert "JIRA_HOST=track.namecheap.net" in content
+    assert "JIRA_API_BASE_PATH=/rest" in content
+
+
+def test_preseed_jira_setup_config_never_overwrites_existing_file(tmp_path, monkeypatch):
+    config_path = tmp_path / ".atlassian-dc-mcp" / "jira.env"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text("JIRA_HOST=some-other-host.example.com\n")
+    monkeypatch.setattr(launcher, "_ATLASSIAN_DC_MCP_CONFIG", config_path)
+    monkeypatch.setattr(launcher.os, "environ", {"JIRA_HOST": "track.namecheap.net"})
+    launcher._preseed_jira_setup_config()
+    assert config_path.read_text() == "JIRA_HOST=some-other-host.example.com\n"
+
+
+def test_preseed_jira_setup_config_does_nothing_without_jira_host(tmp_path, monkeypatch):
+    config_path = tmp_path / ".atlassian-dc-mcp" / "jira.env"
+    monkeypatch.setattr(launcher, "_ATLASSIAN_DC_MCP_CONFIG", config_path)
+    monkeypatch.setattr(launcher.os, "environ", {})
+    launcher._preseed_jira_setup_config()
+    assert not config_path.exists()
 
 
 def test_run_jira_setup_ensures_npx_directory_is_on_path_for_node():
