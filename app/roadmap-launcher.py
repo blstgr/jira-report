@@ -698,9 +698,17 @@ def _install_node_via_brew(brew):
 def _ensure_node():
     """Make sure npx is available, asking explicit y/n consent before
     installing Node.js and, if needed, Homebrew first. Never installs
-    anything silently. Returns True if npx is usable by the end."""
+    anything silently. Returns True if npx is usable by the end.
+
+    The auto-install path only exists for macOS (via Homebrew) — there's no
+    equivalent package-manager automation built for Windows/Linux, so those
+    platforms skip straight to the plain nodejs.org message instead of
+    asking a consent question with no action behind it.
+    """
     if _resolve_npx():
         return True
+    if sys.platform != "darwin":
+        return False
     if not _confirm_install("Node.js", "to run the Jira setup step"):
         return False
     brew = _resolve_brew()
@@ -1580,9 +1588,27 @@ def main():
         print(f"Auto-update installed. Next run at {sched_time} {sched_tz}.")
 
 
-if __name__ == "__main__":
+def _main_with_crash_log():
     try:
         main()
     except KeyboardInterrupt:
         print()
         raise SystemExit(0)
+    except Exception:
+        # Anything we didn't already turn into a friendly SystemExit above
+        # (those aren't caught here — SystemExit isn't an Exception subclass)
+        # is a genuine bug. Save enough to actually debug it, since there's
+        # no other log file for the interactive launcher.
+        import platform as _platform
+        import traceback as _traceback
+        log_path = Path.home() / "roadmap-crash-log.txt"
+        with open(log_path, "w") as f:
+            f.write(f"Python: {sys.version}\n")
+            f.write(f"Platform: {_platform.platform()}\n\n")
+            _traceback.print_exc(file=f)
+        print(f"\nSomething went wrong. A log was saved to:\n    {log_path}\nPlease send that file so this can be debugged.")
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    _main_with_crash_log()

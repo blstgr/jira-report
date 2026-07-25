@@ -330,6 +330,17 @@ def test_ensure_node_user_declines_node_install():
         assert launcher._ensure_node() is False
 
 
+def test_ensure_node_skips_prompts_on_non_mac():
+    # There's no Windows/Linux equivalent of the Homebrew auto-install path
+    # yet — asking "install Node.js? (y/n)" there would be a consent
+    # question with no action behind it, so it must skip straight through
+    # instead of prompting at all.
+    with patch.object(launcher, "_resolve_npx", return_value=None), \
+         patch.object(launcher.sys, "platform", "win32"), \
+         patch("builtins.input", side_effect=AssertionError("should not prompt on non-Mac")):
+        assert launcher._ensure_node() is False
+
+
 def test_ensure_node_installs_via_brew_when_already_present():
     with patch.object(launcher, "_resolve_npx", side_effect=[None, "/fake/npx"]), \
          patch.object(launcher, "_resolve_brew", return_value="/fake/brew"), \
@@ -353,6 +364,37 @@ def test_install_node_via_brew_points_to_homebrew_own_fix_on_failure(capsys):
     output = capsys.readouterr().out.lower()
     assert "chown" in output
     assert "admin" in output
+
+
+def test_main_with_crash_log_saves_traceback_for_unexpected_errors(tmp_path, monkeypatch, capsys):
+    # There's no other log file for the interactive launcher (see the
+    # earlier "are there log files" discussion) — any genuinely unexpected
+    # exception must be saved somewhere the user can actually send, not
+    # just scroll past in the terminal.
+    monkeypatch.setattr(launcher.Path, "home", lambda: tmp_path)
+    with patch.object(launcher, "main", side_effect=RuntimeError("boom, unexpected")):
+        with pytest.raises(SystemExit) as exc_info:
+            launcher._main_with_crash_log()
+    assert exc_info.value.code == 1
+
+    log_path = tmp_path / "roadmap-crash-log.txt"
+    assert log_path.exists()
+    content = log_path.read_text()
+    assert "boom, unexpected" in content
+    assert "Python:" in content
+    assert "Platform:" in content
+    assert str(log_path) in capsys.readouterr().out
+
+
+def test_main_with_crash_log_lets_our_own_system_exit_through_unchanged():
+    # A deliberate, friendly SystemExit (e.g. from run_jira_setup's own
+    # error handling) must NOT be caught and turned into a crash log —
+    # SystemExit isn't an Exception subclass, so this should just pass
+    # through untouched.
+    with patch.object(launcher, "main", side_effect=SystemExit("friendly message")):
+        with pytest.raises(SystemExit) as exc_info:
+            launcher._main_with_crash_log()
+    assert str(exc_info.value) == "friendly message"
 
 
 def test_ensure_node_declines_homebrew_when_brew_missing():

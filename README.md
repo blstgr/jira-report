@@ -105,6 +105,15 @@ If you set a deadline, the **Required** column shows the pace needed each week t
 
 ## 4. How to set up
 
+### Requirements
+
+| What | Mac | Windows |
+|---|---|---|
+| **Python 3** | Installed automatically — macOS prompts to install it the first time you run the tool, no action needed | Install yourself from [python.org/downloads/windows](https://www.python.org/downloads/windows/) before running the tool |
+| **Node.js** (for the Jira setup step) | Installed automatically — the tool asks permission and installs it via Homebrew if it's missing | Install yourself from [nodejs.org](https://nodejs.org/) before running the tool |
+
+**Windows note:** Windows support has been added but not yet tested end-to-end — expect rough edges. If something breaks, see "If something goes wrong" below.
+
 ### Jira connection
 
 The first time you run the tool, if Jira isn't configured on your computer yet, it will open a guided setup automatically. You'll need:
@@ -169,3 +178,9 @@ When you open the tool and a report already exists, it asks what to do:
 | `new` | Starts setup from scratch with new keywords |
 | `edit` | Opens the keyword editor to add or remove features |
 | `quit` | Closes without doing anything |
+
+---
+
+## 6. If something goes wrong
+
+If the tool hits an unexpected error, it saves a log file to `roadmap-crash-log.txt` in your home folder and tells you the exact path. Send that file along with a short description of what you were doing — that's enough to debug most issues without needing to reproduce them.
