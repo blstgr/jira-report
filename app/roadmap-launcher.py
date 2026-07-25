@@ -703,8 +703,14 @@ def _offer_to_fix_brew_permissions(brew):
 
 
 def _install_node_via_brew(brew):
-    print("Installing Node.js via Homebrew — this can take a minute...")
-    result = subprocess.run([brew, "install", "node"], capture_output=True, text=True)
+    # brew install (a formula, not a cask) doesn't prompt or read stdin, so
+    # it's safe to spinner-wrap — unlike run_jira_setup()'s npx subprocess,
+    # which owns the terminal for its own interactive prompts (see the
+    # spinner-erases-prompts incident this codebase already hit once).
+    result = run_spinner(
+        "Installing Node.js via Homebrew — this can take a minute...",
+        lambda: subprocess.run([brew, "install", "node"], capture_output=True, text=True),
+    )
     output = (result.stdout or "") + (result.stderr or "")
     print(output)
     if result.returncode == 0:
@@ -712,8 +718,10 @@ def _install_node_via_brew(brew):
 
     if "not writable" in output.lower() or "chown" in output.lower():
         if _offer_to_fix_brew_permissions(brew):
-            print("Retrying Node.js install...")
-            retry = subprocess.run([brew, "install", "node"], capture_output=True, text=True)
+            retry = run_spinner(
+                "Retrying Node.js install...",
+                lambda: subprocess.run([brew, "install", "node"], capture_output=True, text=True),
+            )
             print((retry.stdout or "") + (retry.stderr or ""))
             if retry.returncode == 0:
                 return _resolve_npx() is not None

@@ -397,6 +397,49 @@ def test_install_node_via_brew_retries_after_permission_fix_accepted():
         assert launcher._install_node_via_brew("/fake/brew") is True
 
 
+REAL_BREW_PERMISSION_ERROR = """\
+Error: /opt/homebrew is not writable. You should change the
+ownership and permissions of /opt/homebrew back to your
+user account:
+  sudo chown -R rulz /opt/homebrew
+Warning: The following taps are not trusted:
+  facebook/fb
+Error: The following directories are not writable by your user:
+/opt/homebrew
+/opt/homebrew/etc/bash_completion.d
+/opt/homebrew/lib/pkgconfig
+
+You should change the ownership of these directories to your user.
+  sudo chown -R rulz /opt/homebrew /opt/homebrew/etc/bash_completion.d /opt/homebrew/lib/pkgconfig
+
+And make sure that your user has write permission.
+  chmod u+w /opt/homebrew /opt/homebrew/etc/bash_completion.d /opt/homebrew/lib/pkgconfig
+"""
+
+
+def test_install_node_via_brew_autofixes_the_exact_real_world_error():
+    # Verbatim (trimmed) copy of the actual output a real user hit twice —
+    # asserts the fix is genuinely offered and applied against this exact
+    # text, not just a simplified stand-in string.
+    fail_result = _fake_completed(1, stderr=REAL_BREW_PERMISSION_ERROR)
+    prefix_result = _fake_completed(0, stdout="/opt/homebrew\n")
+    chown_result = _fake_completed(0)
+    retry_success = _fake_completed(0)
+    with patch.dict(launcher.os.environ, {"USER": "rulz"}, clear=False), \
+         patch.object(launcher.subprocess, "run",
+                      side_effect=[fail_result, prefix_result, chown_result, retry_success]) as fake_run, \
+         patch.object(launcher, "_resolve_npx", return_value="/fake/npx"), \
+         patch("builtins.input", return_value="y") as fake_input:
+        assert launcher._install_node_via_brew("/fake/brew") is True
+
+    # The consent question must have actually been asked, and the chown
+    # command actually run with the right user/prefix — not just skipped.
+    fake_input.assert_called_once()
+    assert "install Node.js" not in fake_input.call_args[0][0]  # it's the chown question, not the initial one
+    chown_call = fake_run.call_args_list[2]
+    assert chown_call.args[0] == ["sudo", "chown", "-R", "rulz", "/opt/homebrew"]
+
+
 def test_install_node_via_brew_generic_failure_does_not_offer_chown_fix():
     # A failure with no "not writable"/"chown" signature (e.g. a network
     # error) shouldn't trigger the permission-fix prompt at all.
