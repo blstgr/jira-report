@@ -3255,10 +3255,16 @@ if __name__ == "__main__":
     try:
         main()
     except JiraAuthError as exc:
-        sys.stderr.write(f"{exc}\n")
+        # roadmap-launcher.py already prints its own plain-English message
+        # for exit code 86 — this technical detail would just double up on
+        # top of it in the relayed subprocess output, so only show it in
+        # --debug mode.
+        if DEBUG:
+            sys.stderr.write(f"{exc}\n")
         raise SystemExit(86)
     except JiraNetworkError as exc:
-        sys.stderr.write(f"{exc}\n")
+        if DEBUG:
+            sys.stderr.write(f"{exc}\n")
         raise SystemExit(87)
     except KeyboardInterrupt:
         raise SystemExit(0)
