@@ -320,84 +320,97 @@ def test_trim_to_hostname_empty_input():
     assert launcher._trim_to_hostname(None) == ""
 
 
-def test_preseed_jira_setup_config_writes_when_absent(tmp_path, monkeypatch):
+def test_write_jira_setup_config_writes_all_three_fields(tmp_path, monkeypatch):
     config_path = tmp_path / ".atlassian-dc-mcp" / "jira.env"
     monkeypatch.setattr(launcher, "_ATLASSIAN_DC_MCP_CONFIG", config_path)
-    monkeypatch.setattr(launcher.os, "environ", {"JIRA_HOST": "https://track.namecheap.net/browse/X"})
-    launcher._preseed_jira_setup_config()
+    launcher._write_jira_setup_config("track.namecheap.net")
     content = config_path.read_text()
     assert "JIRA_HOST=track.namecheap.net" in content
     assert "JIRA_API_BASE_PATH=/rest" in content
+    assert "JIRA_DEFAULT_PAGE_SIZE=25" in content
 
 
-def test_preseed_jira_setup_config_never_overwrites_existing_file(tmp_path, monkeypatch):
+def test_write_jira_setup_config_overwrites_existing_file(tmp_path, monkeypatch):
+    # Unlike the old pre-seed behavior, this always writes — the user just
+    # went through setup and entered a (possibly new) host, so a stale
+    # existing file must not be left in place.
     config_path = tmp_path / ".atlassian-dc-mcp" / "jira.env"
     config_path.parent.mkdir(parents=True)
     config_path.write_text("JIRA_HOST=some-other-host.example.com\n")
     monkeypatch.setattr(launcher, "_ATLASSIAN_DC_MCP_CONFIG", config_path)
-    monkeypatch.setattr(launcher.os, "environ", {"JIRA_HOST": "track.namecheap.net"})
-    launcher._preseed_jira_setup_config()
-    assert config_path.read_text() == "JIRA_HOST=some-other-host.example.com\n"
+    launcher._write_jira_setup_config("track.namecheap.net")
+    assert "JIRA_HOST=track.namecheap.net" in config_path.read_text()
 
 
-def test_preseed_jira_setup_config_does_nothing_without_jira_host(tmp_path, monkeypatch):
-    config_path = tmp_path / ".atlassian-dc-mcp" / "jira.env"
-    monkeypatch.setattr(launcher, "_ATLASSIAN_DC_MCP_CONFIG", config_path)
-    monkeypatch.setattr(launcher.os, "environ", {})
-    launcher._preseed_jira_setup_config()
-    assert not config_path.exists()
+def test_store_jira_token_in_keychain_calls_security_with_update_flag():
+    with patch.object(launcher.subprocess, "run") as fake_run:
+        launcher._store_jira_token_in_keychain("secret-token-value")
+    args = fake_run.call_args[0][0]
+    assert args[:2] == ["security", "add-generic-password"]
+    assert "secret-token-value" in args
+    assert "-U" in args  # update in place if the entry already exists
 
 
-def test_run_jira_setup_ensures_npx_directory_is_on_path_for_node():
-    # Regression: a real user's Jira setup failed with
-    # "env: node: No such file or directory" — npx was resolved via the
-    # Homebrew-fallback path (this process's own PATH didn't have it), but
-    # that same restricted PATH got inherited by the subprocess, so npx
-    # couldn't find `node` sitting right next to it in order to run at all.
-    success_result = type("R", (), {"returncode": 0})()
-    with patch.object(launcher, "_resolve_npx", return_value="/opt/homebrew/bin/npx"), \
-         patch.object(launcher.subprocess, "run", return_value=success_result) as fake_run:
+def test_check_jira_reachability_ok():
+    ok_response = type("R", (), {"status": 200})()
+    with patch.object(launcher.urllib.request, "urlopen") as fake_urlopen:
+        fake_urlopen.return_value.__enter__ = lambda self: ok_response
+        fake_urlopen.return_value.__exit__ = lambda *a: False
+        assert launcher._check_jira_reachability("track.namecheap.net", "tok") == "ok"
+
+
+def test_check_jira_reachability_invalid_token():
+    with patch.object(launcher.urllib.request, "urlopen",
+                       side_effect=launcher.urllib.error.HTTPError("url", 401, "unauthorized", {}, None)):
+        assert launcher._check_jira_reachability("track.namecheap.net", "bad-tok") == "invalid_token"
+
+
+def test_check_jira_reachability_unreachable_means_vpn():
+    # Regression: this exact case (no VPN) used to surface as a raw
+    # "network error (UND_ERR_CONNECT_TIMEOUT ...)" from the third-party
+    # tool. Our own check must clearly distinguish it from a bad token.
+    with patch.object(launcher.urllib.request, "urlopen",
+                       side_effect=launcher.urllib.error.URLError("timed out")):
+        assert launcher._check_jira_reachability("track.namecheap.net", "tok") == "unreachable"
+
+
+def test_run_jira_setup_prompts_host_and_token_then_succeeds(monkeypatch):
+    # Pre-touch JIRA_HOST via monkeypatch so its fixture teardown restores
+    # whatever this key was before, even though run_jira_setup() itself
+    # mutates os.environ directly (not through monkeypatch) — otherwise
+    # this test would leak JIRA_HOST into every test that runs after it.
+    monkeypatch.delenv("JIRA_HOST", raising=False)
+    with patch("builtins.input", side_effect=["https://track.namecheap.net/browse/X", "my-token"]), \
+         patch.object(launcher, "_write_jira_setup_config") as fake_write_config, \
+         patch.object(launcher, "_store_jira_token_in_keychain") as fake_store_token, \
+         patch.object(launcher, "_check_jira_reachability", return_value="ok"):
         launcher.run_jira_setup()
-    _, kwargs = fake_run.call_args
-    path_entries = kwargs["env"]["PATH"].split(launcher.os.pathsep)
-    assert "/opt/homebrew/bin" in path_entries
+    # The pasted full URL must be trimmed to a bare hostname before use.
+    fake_write_config.assert_called_once_with("track.namecheap.net")
+    fake_store_token.assert_called_once_with("my-token")
+    assert launcher.os.environ["JIRA_HOST"] == "track.namecheap.net"
 
 
-def test_run_jira_setup_ctrl_c_exits_cleanly_not_a_traceback():
-    # Regression: Ctrl-C during the interactive `npx @atlassian-dc-mcp/jira
-    # setup` subprocess used to bubble up as an unhandled CalledProcessError
-    # (exit 130) all the way out of main(), printing a raw traceback instead
-    # of a clean message telling the user what happened.
-    import subprocess as _subprocess
-    with patch.object(launcher, "_resolve_npx", return_value="/fake/npx"), \
-         patch.object(launcher.subprocess, "run",
-                      side_effect=_subprocess.CalledProcessError(130, launcher.JIRA_SETUP_CMD)):
+def test_run_jira_setup_unreachable_tells_user_to_connect_vpn(monkeypatch):
+    monkeypatch.delenv("JIRA_HOST", raising=False)
+    with patch("builtins.input", side_effect=["track.namecheap.net", "my-token"]), \
+         patch.object(launcher, "_write_jira_setup_config"), \
+         patch.object(launcher, "_store_jira_token_in_keychain"), \
+         patch.object(launcher, "_check_jira_reachability", return_value="unreachable"):
         with pytest.raises(SystemExit) as exc_info:
             launcher.run_jira_setup()
-    assert "cancelled" in str(exc_info.value).lower()
+    assert "vpn" in str(exc_info.value).lower()
 
 
-def test_run_jira_setup_other_failure_exits_cleanly():
-    import subprocess as _subprocess
-    with patch.object(launcher, "_resolve_npx", return_value="/fake/npx"), \
-         patch.object(launcher.subprocess, "run",
-                      side_effect=_subprocess.CalledProcessError(1, launcher.JIRA_SETUP_CMD)):
+def test_run_jira_setup_invalid_token_exits_cleanly(monkeypatch):
+    monkeypatch.delenv("JIRA_HOST", raising=False)
+    with patch("builtins.input", side_effect=["track.namecheap.net", "bad-token"]), \
+         patch.object(launcher, "_write_jira_setup_config"), \
+         patch.object(launcher, "_store_jira_token_in_keychain"), \
+         patch.object(launcher, "_check_jira_reachability", return_value="invalid_token"):
         with pytest.raises(SystemExit) as exc_info:
             launcher.run_jira_setup()
-    assert "code 1" in str(exc_info.value).lower()
-
-
-def test_run_jira_setup_missing_npx_declined_exits_cleanly():
-    # Regression: a real user's `npx` wasn't found at all (no Node.js
-    # installed, or installed but not on the restricted PATH a
-    # double-clicked/Xcode-stub-python3 launch gets) — this used to crash
-    # with an unhandled FileNotFoundError traceback instead of a clear,
-    # actionable message. Here the user declines the install offer.
-    with patch.object(launcher, "_resolve_npx", return_value=None), \
-         patch("builtins.input", return_value="n"):
-        with pytest.raises(SystemExit) as exc_info:
-            launcher.run_jira_setup()
-    assert "node.js" in str(exc_info.value).lower()
+    assert "token" in str(exc_info.value).lower()
 
 
 def test_ensure_node_already_present_skips_all_prompts():
@@ -590,17 +603,6 @@ def test_ensure_node_homebrew_install_fails():
          patch.object(launcher, "_install_homebrew", return_value=False), \
          patch("builtins.input", side_effect=["y", "y"]):
         assert launcher._ensure_node() is False
-
-
-def test_run_jira_setup_npx_disappears_between_check_and_exec():
-    # Belt-and-suspenders: even if _resolve_npx() finds something, the
-    # actual subprocess.run() call can still raise FileNotFoundError
-    # (e.g. a stale PATH entry) — must not crash with a raw traceback either.
-    with patch.object(launcher, "_resolve_npx", return_value="/fake/npx"), \
-         patch.object(launcher.subprocess, "run", side_effect=FileNotFoundError()):
-        with pytest.raises(SystemExit) as exc_info:
-            launcher.run_jira_setup()
-    assert "node.js" in str(exc_info.value).lower()
 
 
 def test_resolve_npx_falls_back_to_homebrew_path():

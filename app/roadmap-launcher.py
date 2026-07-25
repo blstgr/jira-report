@@ -577,8 +577,12 @@ def read_jira_token():
 def jira_token_is_valid(token):
     if not token:
         return False
+    # Read live rather than the module-level JIRA_HOST constant — that's
+    # frozen at import time, so it'd still be stale/empty here if the host
+    # was only just collected during this same run (see run_jira_setup()).
+    host = os.environ.get("JIRA_HOST", "")
     req = urllib.request.Request(
-        f"https://{JIRA_HOST}/rest/api/2/myself",
+        f"https://{host}/rest/api/2/myself",
         headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
     )
     try:
@@ -783,62 +787,77 @@ def _trim_to_hostname(value):
 
 
 _ATLASSIAN_DC_MCP_CONFIG = Path.home() / ".atlassian-dc-mcp" / "jira.env"
+_JIRA_TOKEN_HELP = "In Jira: click your avatar → Profile → Personal Access Tokens → Create"
 
 
-def _preseed_jira_setup_config():
-    """Best-effort: if the third-party setup tool's own config file doesn't
-    exist yet, pre-fill the two fields we already know the answer to
-    (JIRA_HOST, and the standard Jira Data Center/Server API base path) so
-    its wizard has less to ask. Inferred from this exact tool's own observed
-    config format on a working machine — never touches an existing file, so
-    if a different version uses a different format this just silently does
-    nothing and the wizard falls back to asking as normal."""
-    if _ATLASSIAN_DC_MCP_CONFIG.exists():
-        return
-    host = _trim_to_hostname(os.environ.get("JIRA_HOST", ""))
-    if not host:
-        return
+def _write_jira_setup_config(host):
+    """(Over)write the Atlassian DC MCP config file with what the user just
+    entered. This replaces that tool's own interactive `setup` step (see
+    run_jira_setup()) rather than just pre-filling defaults for it, so it
+    always writes — unlike a pre-seed, there's no "don't touch an existing
+    file" concern here, since this *is* the setup now."""
     try:
         _ATLASSIAN_DC_MCP_CONFIG.parent.mkdir(parents=True, exist_ok=True)
-        _ATLASSIAN_DC_MCP_CONFIG.write_text(f"JIRA_HOST={host}\nJIRA_API_BASE_PATH=/rest\n")
+        _ATLASSIAN_DC_MCP_CONFIG.write_text(
+            f"JIRA_HOST={host}\nJIRA_API_BASE_PATH=/rest\nJIRA_DEFAULT_PAGE_SIZE=25\n"
+        )
     except Exception:
-        pass  # best-effort only — the wizard will just ask if this fails
+        pass  # best-effort — the config file is a convenience, not required for this tool's own use
+
+
+def _store_jira_token_in_keychain(token):
+    subprocess.run(
+        ["security", "add-generic-password", "-a", JIRA_ACCOUNT, "-s", JIRA_SERVICE, "-w", token, "-U"],
+        capture_output=True, text=True,
+    )
+
+
+def _check_jira_reachability(host, token):
+    """Distinguish "not on VPN" from "bad token" from "working" for the
+    setup flow itself. Unlike jira_token_is_valid() (used elsewhere, where
+    a network error optimistically means "assume the token is fine, let a
+    later step surface VPN issues its own way"), here we want to say
+    plainly what's wrong right now, since the user is watching and waiting."""
+    req = urllib.request.Request(
+        f"https://{host}/rest/api/2/myself",
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as response:
+            return "ok" if response.status == 200 else "error"
+    except urllib.error.HTTPError as exc:
+        return "invalid_token" if exc.code in (401, 403) else "error"
+    except urllib.error.URLError:
+        return "unreachable"
+    except Exception:
+        return "error"
 
 
 def run_jira_setup():
-    if not _ensure_node():
-        raise SystemExit(_NPX_NOT_FOUND_MESSAGE)
-    npx = _resolve_npx()
-
     print("\nJira is not set up on this computer yet.")
-    print("We are going to open the Atlassian setup flow now. It'll ask a few things:")
-    print("  - Host: your Jira URL — a full link (e.g. a task or board link) is fine")
-    print("  - API base path: always /rest for Jira Data Center — just accept it")
-    print("  - Token: your Jira Personal Access Token")
-    print("  - Page size: how many results it fetches per request internally —")
-    print("    not related to your report, 25 is a normal default")
-    _preseed_jira_setup_config()
-    cmd = [npx] + JIRA_SETUP_CMD[1:]
-    # npx itself needs `node` on PATH to run — if npx was only found via the
-    # Homebrew-fallback path in _resolve_npx() (this process's own PATH
-    # didn't have it), that same restricted PATH gets inherited here too,
-    # so node still won't be found even though it was just installed right
-    # next to npx. Make sure its directory is on PATH for this call.
-    env = os.environ.copy()
-    npx_dir = str(Path(npx).parent)
-    path_entries = env.get("PATH", "").split(os.pathsep)
-    if npx_dir not in path_entries:
-        env["PATH"] = os.pathsep.join([npx_dir] + path_entries)
-    try:
-        subprocess.run(cmd, cwd=ROOT, check=True, env=env)
-    except FileNotFoundError:
-        raise SystemExit(_NPX_NOT_FOUND_MESSAGE)
-    except subprocess.CalledProcessError as exc:
-        if exc.returncode == 130:
-            raise SystemExit("\nJira setup was cancelled. Run the tool again when you're ready to finish it.")
-        raise SystemExit(
-            f"Jira setup exited before finishing (code {exc.returncode}). Run the tool again to retry."
-        )
+    host = ""
+    while not host:
+        host = _trim_to_hostname(input("→ Enter Jira URL: "))
+    token = ""
+    while not token:
+        token = input(f"→ Enter Jira Personal Access Token ({_JIRA_TOKEN_HELP}): ").strip()
+
+    def _finish_setup():
+        os.environ["JIRA_HOST"] = host
+        _write_jira_setup_config(host)
+        _store_jira_token_in_keychain(token)
+        return _check_jira_reachability(host, token)
+
+    status = run_spinner("Setting things up — Jira and your token are getting acquainted...", _finish_setup)
+
+    if status == "unreachable":
+        raise SystemExit("\nCan't reach Jira — you need to connect to VPN first, then run this tool again.")
+    if status == "invalid_token":
+        raise SystemExit("\nThat token doesn't look valid. Double-check it and run this tool again.")
+    if status != "ok":
+        raise SystemExit("\nCouldn't confirm Jira is reachable. Run this tool again to retry.")
+
+    print(f"✓ Jira is set up. Add this to your shell profile so future runs remember it:\n    export JIRA_HOST=\"{host}\"")
 
 
 def _check_existing_jira_token():
@@ -847,11 +866,10 @@ def _check_existing_jira_token():
 
 
 def ensure_jira_token():
-    # Only the fast, silent check runs under a spinner. run_jira_setup() hands
-    # off to an INTERACTIVE subprocess (npx @atlassian-dc-mcp/jira setup) that
-    # prints its own prompts and reads the user's answers — a spinner redrawing
-    # over it every 120ms erases those prompts before the user can see or
-    # answer them, making a working setup wizard look like it's just hung.
+    # Only the fast, silent check runs under a spinner. run_jira_setup() itself
+    # prompts the user directly (host, then token) via input() — a spinner
+    # redrawing over stdout every 120ms would fight with those prompts the
+    # same way it once did with the third-party npx wizard this replaced.
     token = run_spinner("Checking Jira setup. Making sure the gears are greased...", _check_existing_jira_token)
     if token:
         return token
@@ -1105,7 +1123,7 @@ def _run_targeted_edit(
         if new_exclude not in ("/back", None):
             excludes = sanitize_keyword_values(new_exclude)
         new_keys = prompt_list_or_default(
-            "Jira project keys (e.g. ABC, XYZ) — empty for all",
+            "Jira project keys (the prefix before the dash in a Jira issue ID, e.g. ABC in ABC-123) — empty for all",
             project_keys or None,
         )
         if new_keys not in ("/back", None):
@@ -1113,7 +1131,7 @@ def _run_targeted_edit(
 
     elif section == "jira key":
         new_keys = prompt_list_or_default(
-            "Jira project keys (e.g. ABC, XYZ) — empty for all",
+            "Jira project keys (the prefix before the dash in a Jira issue ID, e.g. ABC in ABC-123) — empty for all",
             project_keys or None,
         )
         if new_keys not in ("/back", None):
@@ -1391,12 +1409,12 @@ def main():
         if stage == 11:
             if project_keys:
                 next_keys = prompt_list_or_default(
-                    "Jira project keys to include, comma-separated (e.g. ABC, XYZ) — leave empty to include all",
+                    "Jira project keys to include, comma-separated (the prefix before the dash in a Jira issue ID, e.g. ABC in ABC-123) — leave empty to include all",
                     project_keys,
                     required=False,
                 )
             else:
-                next_keys = prompt_optional_list("Jira project keys to include, comma-separated (e.g. ABC, XYZ) — leave empty to include all")
+                next_keys = prompt_optional_list("Jira project keys to include, comma-separated (the prefix before the dash in a Jira issue ID, e.g. ABC in ABC-123) — leave empty to include all")
             if next_keys == "/back":
                 stage = 1
                 continue

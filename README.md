@@ -110,7 +110,8 @@ If you set a deadline, the **Required** column shows the pace needed each week t
 | What | Mac | Windows |
 |---|---|---|
 | **Python 3** | Installed automatically — macOS prompts to install it the first time you run the tool, no action needed | Install yourself from [python.org/downloads/windows](https://www.python.org/downloads/windows/) before running the tool |
-| **Node.js** (for the Jira setup step) | Installed automatically — the tool asks permission and installs it via Homebrew if it's missing | Install yourself from [nodejs.org](https://nodejs.org/) before running the tool |
+
+Nothing else to install — Jira setup just asks for your Jira URL and Personal Access Token directly.
 
 **Windows note:** Windows support has been added but not yet tested end-to-end — expect rough edges. If something breaks, see "If something goes wrong" below.
 
