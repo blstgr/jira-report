@@ -326,6 +326,45 @@ def test_load_report_spec_fallback_has_no_hardcoded_feature_keyword():
     assert spec["exclude_keywords"] == ["post release", "post-release"]
 
 
+def test_fetch_all_search_reports_progress_per_page():
+    # Regression: a batch's tasks can span many pages of 100 — with no
+    # per-page callback, a single large/slow batch showed zero movement for
+    # its whole duration, which read as the tool having frozen.
+    pages = [
+        {"issues": [{"key": f"T-{i}"} for i in range(100)], "total": 250},
+        {"issues": [{"key": f"T-{i}"} for i in range(100, 200)], "total": 250},
+        {"issues": [{"key": f"T-{i}"} for i in range(200, 250)], "total": 250},
+    ]
+    calls = iter(pages)
+    original_jget = jr.jget
+    original_sleep = jr.time.sleep
+    jr.jget = lambda *a, **kw: next(calls)
+    jr.time.sleep = lambda *a, **kw: None
+    progress_calls = []
+    try:
+        items = jr.fetch_all_search(
+            "some jql", "summary", on_progress=lambda fetched, total: progress_calls.append((fetched, total))
+        )
+    finally:
+        jr.jget = original_jget
+        jr.time.sleep = original_sleep
+    assert len(items) == 250
+    assert progress_calls == [(100, 250), (200, 250), (250, 250)]
+
+
+def test_fetch_all_search_works_without_progress_callback():
+    original_jget = jr.jget
+    original_sleep = jr.time.sleep
+    jr.jget = lambda *a, **kw: {"issues": [{"key": "T-1"}], "total": 1}
+    jr.time.sleep = lambda *a, **kw: None
+    try:
+        items = jr.fetch_all_search("some jql", "summary")
+    finally:
+        jr.jget = original_jget
+        jr.time.sleep = original_sleep
+    assert items == [{"key": "T-1"}]
+
+
 if __name__ == "__main__":
     import traceback
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

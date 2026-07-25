@@ -6,7 +6,6 @@
   <string>roadmap-jira-report-missed-update-check</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/bin/bash</string>
     <string>__JIRA_REPORT_MONITOR_LAUNCHER__</string>
   </array>
   <key>WorkingDirectory</key>

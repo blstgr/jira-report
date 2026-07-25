@@ -85,11 +85,13 @@ def test_both_jobs_route_through_the_safe_application_scripts_wrapper(fake_home)
             f"{label}: WorkingDirectory must not point into the project directory"
         )
 
-        # ProgramArguments must exec bash on a wrapper script that also lives
-        # in the safe dir, not a file directly inside the project directory.
+        # ProgramArguments must exec the wrapper script directly (via its own
+        # shebang + executable bit), not "/bin/bash <script>" — the latter
+        # makes macOS's own "Allow in the Background" list show a generic
+        # "bash" for both jobs instead of a name that means anything.
         program_args = plist["ProgramArguments"]
-        assert program_args[0] == "/bin/bash", f"{label}: expected bash wrapper, got {program_args}"
-        wrapper_path = program_args[1]
+        assert len(program_args) == 1, f"{label}: expected a single direct executable, got {program_args}"
+        wrapper_path = program_args[0]
         assert wrapper_path.startswith(safe_dir), (
             f"{label}: wrapper {wrapper_path!r} must live under the safe Application "
             f"Scripts dir, not directly reference the project app/ directory"
@@ -107,7 +109,7 @@ def test_both_jobs_route_through_the_safe_application_scripts_wrapper(fake_home)
 
 def test_monitor_wrapper_execs_check_missed_update_with_preferred_python3(fake_home):
     _run_install(fake_home)
-    monitor_path = _safe_scripts_dir(fake_home) / "monitor.sh"
+    monitor_path = _safe_scripts_dir(fake_home) / "Jira Roadmap Update Monitor"
     content = monitor_path.read_text()
     assert "check-missed-update.py" in content
     assert str(APP_DIR / "check-missed-update.py") in content
@@ -120,9 +122,23 @@ def test_monitor_wrapper_execs_check_missed_update_with_preferred_python3(fake_h
 
 def test_daily_update_wrapper_execs_run_daily_update(fake_home):
     _run_install(fake_home)
-    run_path = _safe_scripts_dir(fake_home) / "run.sh"
+    run_path = _safe_scripts_dir(fake_home) / "Jira Roadmap Update"
     content = run_path.read_text()
     assert str(APP_DIR / "run-daily-update.py") in content
+
+
+def test_wrapper_filenames_are_human_readable_for_background_task_list(fake_home):
+    # macOS's "Allow in the Background" list displays the leaf filename of
+    # ProgramArguments[0] itself, not the name of the interpreter that file's
+    # shebang resolves to. A wrapper named "run.sh" (or invoked via an
+    # explicit "/bin/bash" argument) shows up there as a generic "bash" for
+    # both jobs — regressed once already. The wrapper's own filename must be
+    # the human-readable name the user should see.
+    _run_install(fake_home)
+    plist = _load_plist(fake_home, "roadmap-jira-report-update")
+    assert Path(plist["ProgramArguments"][0]).name == "Jira Roadmap Update"
+    monitor_plist = _load_plist(fake_home, "roadmap-jira-report-missed-update-check")
+    assert Path(monitor_plist["ProgramArguments"][0]).name == "Jira Roadmap Update Monitor"
 
 
 def test_install_does_not_touch_real_launchctl_state_in_test_mode(fake_home, monkeypatch):

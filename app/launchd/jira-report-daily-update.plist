@@ -6,7 +6,6 @@
   <string>roadmap-jira-report-update</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/bin/bash</string>
     <string>__JIRA_REPORT_LAUNCHER__</string>
   </array>
   <key>WorkingDirectory</key>

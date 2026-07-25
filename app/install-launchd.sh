@@ -42,8 +42,13 @@ fi
 # fails as "Operation not permitted" / "cannot access parent directories"
 # at shell init, before the wrapped script ever runs.
 LAUNCHER_DIR="$HOME/Library/Application Scripts/jira-report"
-LAUNCHER="$LAUNCHER_DIR/run.sh"
-MONITOR_LAUNCHER="$LAUNCHER_DIR/monitor.sh"
+# macOS's "Allow in the Background" list displays the leaf filename of
+# ProgramArguments[0] itself — not the interpreter that filename's shebang
+# resolves to. So the wrapper script's own filename IS the name the user
+# sees; give it the same human-readable name literally, no .sh, matching
+# the notification title in check-missed-update.py.
+LAUNCHER="$LAUNCHER_DIR/Jira Roadmap Update"
+MONITOR_LAUNCHER="$LAUNCHER_DIR/Jira Roadmap Update Monitor"
 mkdir -p "$LAUNCHER_DIR"
 cat > "$LAUNCHER" << LAUNCHER_EOF
 #!/bin/bash

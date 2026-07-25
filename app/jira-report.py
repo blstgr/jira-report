@@ -527,7 +527,7 @@ def jget(url, context=None):
     raise last_error
 
 
-def fetch_all_search(jql, fields, expand=None, context=None):
+def fetch_all_search(jql, fields, expand=None, context=None, on_progress=None):
     start = 0
     items = []
     while True:
@@ -538,6 +538,11 @@ def fetch_all_search(jql, fields, expand=None, context=None):
         data = jget(f"{BASE}/search?{urllib.parse.urlencode(params)}", context=search_context)
         items.extend(data["issues"])
         start += len(data["issues"])
+        if on_progress:
+            # A batch's tasks can span many pages (100/page) — without this,
+            # a single slow/large batch shows no movement at all until the
+            # whole thing finishes, which reads as a frozen tool.
+            on_progress(start, data["total"])
         if start >= data["total"]:
             break
         time.sleep(REQUEST_PAUSE_SECONDS)
@@ -3065,6 +3070,9 @@ def main():
                 ",".join(task_fields),
                 expand="changelog",
                 context=f"collecting task batch {batch_index}/{total_batches} for epics {', '.join(epic_batch)}",
+                on_progress=lambda fetched, total, _b=batch_index, _t=total_batches: set_message(
+                    f"Collecting tasks for report batch {_b}/{_t} — {fetched}/{total} tasks..."
+                ),
             )
             for issue in child_issues:
                 linked_epic_key = ""
