@@ -32,8 +32,6 @@ REPORTS_DIR = ROOT / "report"
 OAUTH_SETUP_FILE = APP_DIR / "google-oauth-setup.json"
 JIRA_SERVICE = os.environ.get("JIRA_KEYCHAIN_SERVICE", "atlassian-dc-mcp")
 JIRA_ACCOUNT = os.environ.get("JIRA_KEYCHAIN_ACCOUNT", "jira-token")
-JIRA_HOST = os.environ.get("JIRA_HOST", "")
-JIRA_SETUP_CMD = ["npx", "@atlassian-dc-mcp/jira", "setup"]
 JOB_NAME = "roadmap-jira-report-update"
 GOOGLE_CLIENT_SECRETS_CANDIDATES = [
     APP_DIR / "google-oauth-client-secrets.json",
@@ -577,9 +575,8 @@ def read_jira_token():
 def jira_token_is_valid(token):
     if not token:
         return False
-    # Read live rather than the module-level JIRA_HOST constant — that's
-    # frozen at import time, so it'd still be stale/empty here if the host
-    # was only just collected during this same run (see run_jira_setup()).
+    # Read live — the host may have only just been collected during this
+    # same run (see run_jira_setup()), so a cached value would be stale.
     host = os.environ.get("JIRA_HOST", "")
     req = urllib.request.Request(
         f"https://{host}/rest/api/2/myself",
@@ -629,152 +626,6 @@ def daily_job_exists():
         )
         return result.returncode == 0
     return False
-
-
-def _resolve_npx():
-    """Find npx even when this process has a restricted PATH that doesn't
-    include Homebrew's bin dir — e.g. when python3 resolves to the Xcode
-    Command Line Tools' bundled stub instead of a real install."""
-    import shutil
-    found = shutil.which("npx")
-    if found:
-        return found
-    for candidate in ("/opt/homebrew/bin/npx", "/usr/local/bin/npx"):
-        if os.path.exists(candidate):
-            return candidate
-    return None
-
-
-_NPX_NOT_FOUND_MESSAGE = (
-    "Couldn't find 'npx' (part of Node.js) on this computer. "
-    "Install Node.js from https://nodejs.org (or `brew install node` if you use Homebrew), "
-    "then run this tool again."
-)
-
-
-def _resolve_brew():
-    import shutil
-    found = shutil.which("brew")
-    if found:
-        return found
-    for candidate in ("/opt/homebrew/bin/brew", "/usr/local/bin/brew"):
-        if os.path.exists(candidate):
-            return candidate
-    return None
-
-
-def _confirm_install(name, reason):
-    print(f"{name} is not installed, and we need it {reason}.")
-    answer = input(f"Do you agree to install {name}? (y/n): ").strip().lower()
-    return answer in ("y", "yes")
-
-
-def _install_homebrew():
-    print("Installing Homebrew — this may ask for your Mac password and can take a few minutes...")
-    try:
-        import urllib.request
-        script = urllib.request.urlopen(
-            "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh", timeout=30
-        ).read().decode()
-        subprocess.run(["/bin/bash", "-c", script], check=True)
-    except Exception as exc:
-        print(f"Homebrew install failed: {exc}")
-        return False
-    return _resolve_brew() is not None
-
-
-def _offer_to_fix_brew_permissions(brew):
-    """Homebrew's own fix for the common 'is not writable' error is always
-    the same shape: chown its prefix back to the current user. Use
-    `brew --prefix` + the real username rather than parsing Homebrew's
-    free-text suggestion, which can span multiple lines and change wording
-    between versions — and don't show that free-text wall to the user at
-    all when we can name the fix ourselves in one short line."""
-    prefix_result = subprocess.run([brew, "--prefix"], capture_output=True, text=True)
-    prefix = prefix_result.stdout.strip() or "/opt/homebrew"
-    user = os.environ.get("USER") or os.environ.get("LOGNAME")
-    if not user:
-        try:
-            user = os.getlogin()
-        except Exception:
-            return False
-    answer = input(
-        f"Permission fix needed: {prefix} isn't owned by you. Fix it now? (y/n): "
-    ).strip().lower()
-    if answer not in ("y", "yes"):
-        print(f"Skipped. Run this yourself later, then try again: sudo chown -R {user} {prefix}")
-        return False
-    fix_result = subprocess.run(["sudo", "chown", "-R", user, prefix])
-    if fix_result.returncode != 0:
-        print(f"Fix failed — you can run it yourself: sudo chown -R {user} {prefix}")
-        return False
-    return True
-
-
-def _install_node_via_brew(brew):
-    # brew install (a formula, not a cask) doesn't prompt or read stdin, so
-    # it's safe to spinner-wrap — unlike run_jira_setup()'s npx subprocess,
-    # which owns the terminal for its own interactive prompts (see the
-    # spinner-erases-prompts incident this codebase already hit once).
-    result = run_spinner(
-        "Installing Node.js via Homebrew — this can take a minute...",
-        lambda: subprocess.run([brew, "install", "node"], capture_output=True, text=True),
-    )
-    output = (result.stdout or "") + (result.stderr or "")
-    if result.returncode == 0:
-        return _resolve_npx() is not None
-
-    if "not writable" in output.lower() or "chown" in output.lower():
-        # Known, handleable case — skip Homebrew's raw multi-paragraph
-        # output entirely and go straight to our own short question.
-        if _offer_to_fix_brew_permissions(brew):
-            retry = run_spinner(
-                "Retrying Node.js install...",
-                lambda: subprocess.run([brew, "install", "node"], capture_output=True, text=True),
-            )
-            if retry.returncode == 0:
-                return _resolve_npx() is not None
-            print((retry.stdout or "") + (retry.stderr or ""))
-        return False
-
-    # Anything else is unhandled — show the raw output since there's
-    # nothing shorter we can say instead, and the user (or we) may need it.
-    print(output)
-    print(
-        "If Homebrew printed a fix above (often a 'sudo chown ...' command for "
-        "its install directory), run that in Terminal, then run this tool again — "
-        "Homebrew itself refuses to install packages as root, so being an admin "
-        "doesn't skip this step."
-    )
-    return False
-
-
-def _ensure_node():
-    """Make sure npx is available, asking explicit y/n consent before
-    installing Node.js and, if needed, Homebrew first. Never installs
-    anything silently. Returns True if npx is usable by the end.
-
-    The auto-install path only exists for macOS (via Homebrew) — there's no
-    equivalent package-manager automation built for Windows/Linux, so those
-    platforms skip straight to the plain nodejs.org message instead of
-    asking a consent question with no action behind it.
-    """
-    if _resolve_npx():
-        return True
-    if sys.platform != "darwin":
-        return False
-    if not _confirm_install("Node.js", "to run the Jira setup step"):
-        return False
-    brew = _resolve_brew()
-    if not brew:
-        if not _confirm_install("Homebrew", "to install Node.js"):
-            return False
-        if not _install_homebrew():
-            return False
-        brew = _resolve_brew()
-        if not brew:
-            return False
-    return _install_node_via_brew(brew)
 
 
 def _trim_to_hostname(value):
