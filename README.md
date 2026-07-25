@@ -75,7 +75,6 @@ Jira's many statuses are simplified into four values:
 
 When a task goes on hold after being in progress, the report splits it into separate rows — one per active period, one per pause. Time spent on hold is excluded from *days in work*, so pauses don't inflate the count.
 
-*(screenshot — tasks tab)*
 
 ---
 
@@ -87,7 +86,6 @@ Shows one row per feature and estimates when it will be delivered:
 - **You provided a deadline** → calculates the required pace to hit it and compares against actual
 - **Neither** → approximates delivery date from the actual pace observed in recent weeks
 
-*(screenshot — summary tab)*
 
 ---
 
@@ -132,10 +130,17 @@ The repo also includes `settings/roadmap-settings.json` — an empty template fo
 
 The tool works on both Mac and Windows.
 
-- **Mac** — double-click `app/roadmap.command`
-- **Windows** — double-click `app/roadmap.bat`
+- **Mac/Windows** — double-click `jira-report/roadmap`
 
 A terminal window opens and walks you through the rest.
+
+> **Mac: first-run security warning.** Since `roadmap` is a downloaded, unsigned script, macOS Gatekeeper will block it the first time with a message like *"roadmap" can't be opened*. To allow it:
+> 1. Try to open `roadmap` once so macOS registers the block.
+> 2. Open the Apple menu () → **System Settings**.
+> 3. Click **Privacy & Security** in the sidebar, then scroll down to the security section.
+> 4. Find the message about `"roadmap"` being blocked and click **Open Anyway**.
+>
+> You only need to do this once.
 
 ### Google Drive
 
