@@ -114,8 +114,6 @@ The first time you run the tool, if Jira isn't configured on your computer yet, 
 | **Jira URL** | Your company's Jira address, e.g. `track.yourcompany.com` |
 | **Personal Access Token** | In Jira: click your avatar → Profile → Personal Access Tokens → Create |
 
-This step also needs Node.js (for the underlying setup tool). Nothing to install ahead of time — if it's missing, the tool will ask permission to install it for you (via Homebrew on Mac) before continuing. Just answer **y** when prompted.
-
 ### Settings file
 
 All settings are stored in `settings/roadmap-settings.local.json`. This file is yours — it stays on your computer and is never shared.

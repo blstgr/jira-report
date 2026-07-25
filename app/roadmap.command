@@ -4,15 +4,13 @@ cd "$(dirname "$0")/.."
 
 if ! command -v python3 >/dev/null 2>&1 || ! python3 --version >/dev/null 2>&1; then
     echo ""
-    echo "Python is required to run this tool, and it isn't available yet."
+    echo "Python isn't set up on this Mac yet. Triggering Apple's installer for it..."
+    xcode-select --install >/dev/null 2>&1 || true
     echo ""
-    echo "If macOS just showed a popup about installing the Command Line"
-    echo "Developer Tools and you dismissed it, open Terminal and run:"
-    echo ""
-    echo "    xcode-select --install"
-    echo ""
-    echo "Click Install when the popup appears, wait for it to finish, then"
-    echo "run this tool again."
+    echo "If a popup appeared, click Install and wait for it to finish (a"
+    echo "few minutes), then run this tool again."
+    echo "If nothing appeared, the Command Line Tools may already be present"
+    echo "but broken — run 'xcode-select --install' yourself in Terminal to see why."
     read -n 1 -s -r -p "Press any key to close..."
     exit 1
 fi
