@@ -684,7 +684,8 @@ def _offer_to_fix_brew_permissions(brew):
     the same shape: chown its prefix back to the current user. Use
     `brew --prefix` + the real username rather than parsing Homebrew's
     free-text suggestion, which can span multiple lines and change wording
-    between versions."""
+    between versions — and don't show that free-text wall to the user at
+    all when we can name the fix ourselves in one short line."""
     prefix_result = subprocess.run([brew, "--prefix"], capture_output=True, text=True)
     prefix = prefix_result.stdout.strip() or "/opt/homebrew"
     user = os.environ.get("USER") or os.environ.get("LOGNAME")
@@ -693,13 +694,17 @@ def _offer_to_fix_brew_permissions(brew):
             user = os.getlogin()
         except Exception:
             return False
-    print(f"\nHomebrew's install directory ({prefix}) has the wrong file ownership — "
-          "a common issue after a prior 'sudo brew ...'.")
-    answer = input(f"Run 'sudo chown -R {user} {prefix}' now to fix it? (y/n): ").strip().lower()
+    answer = input(
+        f"Permission fix needed: {prefix} isn't owned by you. Fix it now? (y/n): "
+    ).strip().lower()
     if answer not in ("y", "yes"):
+        print(f"Skipped. Run this yourself later, then try again: sudo chown -R {user} {prefix}")
         return False
     fix_result = subprocess.run(["sudo", "chown", "-R", user, prefix])
-    return fix_result.returncode == 0
+    if fix_result.returncode != 0:
+        print(f"Fix failed — you can run it yourself: sudo chown -R {user} {prefix}")
+        return False
+    return True
 
 
 def _install_node_via_brew(brew):
@@ -712,20 +717,25 @@ def _install_node_via_brew(brew):
         lambda: subprocess.run([brew, "install", "node"], capture_output=True, text=True),
     )
     output = (result.stdout or "") + (result.stderr or "")
-    print(output)
     if result.returncode == 0:
         return _resolve_npx() is not None
 
     if "not writable" in output.lower() or "chown" in output.lower():
+        # Known, handleable case — skip Homebrew's raw multi-paragraph
+        # output entirely and go straight to our own short question.
         if _offer_to_fix_brew_permissions(brew):
             retry = run_spinner(
                 "Retrying Node.js install...",
                 lambda: subprocess.run([brew, "install", "node"], capture_output=True, text=True),
             )
-            print((retry.stdout or "") + (retry.stderr or ""))
             if retry.returncode == 0:
                 return _resolve_npx() is not None
+            print((retry.stdout or "") + (retry.stderr or ""))
+        return False
 
+    # Anything else is unhandled — show the raw output since there's
+    # nothing shorter we can say instead, and the user (or we) may need it.
+    print(output)
     print(
         "If Homebrew printed a fix above (often a 'sudo chown ...' command for "
         "its install directory), run that in Terminal, then run this tool again — "
@@ -772,8 +782,18 @@ def run_jira_setup():
     print("We are going to open the Atlassian setup flow now.")
     print("Follow the prompts in the README-guided setup.")
     cmd = [npx] + JIRA_SETUP_CMD[1:]
+    # npx itself needs `node` on PATH to run — if npx was only found via the
+    # Homebrew-fallback path in _resolve_npx() (this process's own PATH
+    # didn't have it), that same restricted PATH gets inherited here too,
+    # so node still won't be found even though it was just installed right
+    # next to npx. Make sure its directory is on PATH for this call.
+    env = os.environ.copy()
+    npx_dir = str(Path(npx).parent)
+    path_entries = env.get("PATH", "").split(os.pathsep)
+    if npx_dir not in path_entries:
+        env["PATH"] = os.pathsep.join([npx_dir] + path_entries)
     try:
-        subprocess.run(cmd, cwd=ROOT, check=True)
+        subprocess.run(cmd, cwd=ROOT, check=True, env=env)
     except FileNotFoundError:
         raise SystemExit(_NPX_NOT_FOUND_MESSAGE)
     except subprocess.CalledProcessError as exc:

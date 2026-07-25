@@ -294,6 +294,21 @@ def test_detect_system_timezone_falls_back_to_utc_offset():
         assert launcher._detect_system_timezone() == "+03:00"
 
 
+def test_run_jira_setup_ensures_npx_directory_is_on_path_for_node():
+    # Regression: a real user's Jira setup failed with
+    # "env: node: No such file or directory" — npx was resolved via the
+    # Homebrew-fallback path (this process's own PATH didn't have it), but
+    # that same restricted PATH got inherited by the subprocess, so npx
+    # couldn't find `node` sitting right next to it in order to run at all.
+    success_result = type("R", (), {"returncode": 0})()
+    with patch.object(launcher, "_resolve_npx", return_value="/opt/homebrew/bin/npx"), \
+         patch.object(launcher.subprocess, "run", return_value=success_result) as fake_run:
+        launcher.run_jira_setup()
+    _, kwargs = fake_run.call_args
+    path_entries = kwargs["env"]["PATH"].split(launcher.os.pathsep)
+    assert "/opt/homebrew/bin" in path_entries
+
+
 def test_run_jira_setup_ctrl_c_exits_cleanly_not_a_traceback():
     # Regression: Ctrl-C during the interactive `npx @atlassian-dc-mcp/jira
     # setup` subprocess used to bubble up as an unhandled CalledProcessError
@@ -371,16 +386,17 @@ def _fake_completed(returncode=0, stdout="", stderr=""):
 def test_install_node_via_brew_declines_permission_fix_falls_back(capsys):
     # Regression: a real user hit `brew install node` failing because
     # /opt/homebrew had broken ownership (a common footgun from a prior
-    # `sudo brew ...`). If the user declines the auto-fix offer, the
-    # fallback message must still point back at Homebrew's own guidance.
-    fail_result = _fake_completed(1, stderr="Error: /opt/homebrew is not writable.\n  sudo chown -R rulz /opt/homebrew")
+    # `sudo brew ...`). If the user declines the auto-fix offer, a short
+    # reminder must still be shown — and the raw Homebrew wall of text
+    # must NOT be dumped, since we already know exactly what's wrong.
+    fail_result = _fake_completed(1, stderr=REAL_BREW_PERMISSION_ERROR)
     with patch.object(launcher.subprocess, "run", return_value=fail_result), \
          patch("builtins.input", return_value="n"):
         result = launcher._install_node_via_brew("/fake/brew")
     assert result is False
     output = capsys.readouterr().out.lower()
     assert "chown" in output
-    assert "admin" in output
+    assert "facebook/fb" not in output  # Homebrew's unrelated raw noise must be suppressed
 
 
 def test_install_node_via_brew_retries_after_permission_fix_accepted():
