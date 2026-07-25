@@ -113,7 +113,7 @@ If you set a deadline, the **Required** column shows the pace needed each week t
 
 Nothing else to install — Jira setup just asks for your Jira URL and Personal Access Token directly.
 
-**Windows note:** Windows support has been added but not yet tested end-to-end — expect rough edges. If something breaks, see "If something goes wrong" below.
+**Windows note:** Windows support exists in the same sense that a treaty exists — it's written down, everyone means well, and it has never survived contact with reality. It works *theoretically*. Nobody has actually run it on a real Windows machine yet, so genuinely, expect anything: it might work perfectly, it might ask you to `sudo chown` your own `C:\`, it might achieve sentience. If you're on Windows and feeling brave, please try it and tell us what breaks — see "If something goes wrong" below for how to send us the evidence.
 
 ### Jira connection
 

@@ -20,28 +20,14 @@ from pathlib import Path
 
 from google_drive_sync import upload_or_update
 
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Font, PatternFill
+from openpyxl.styles import Alignment, Border, Side
+from openpyxl.worksheet.filters import FilterColumn, Filters
 try:
-    from openpyxl import Workbook, load_workbook
-    from openpyxl.styles import Font, PatternFill
-    from openpyxl.styles import Alignment, Border, Side
-    from openpyxl.worksheet.filters import FilterColumn, Filters
-    try:
-        from PIL import ImageFont
-    except Exception:
-        ImageFont = None
-except ImportError:
-    bundle_root = Path.home() / ".cache" / "codex-runtimes" / "codex-primary-runtime" / "dependencies" / "python" / "lib"
-    for site_packages in bundle_root.glob("python*/site-packages"):
-        if str(site_packages) not in sys.path:
-            sys.path.append(str(site_packages))
-    from openpyxl import Workbook, load_workbook
-    from openpyxl.styles import Font, PatternFill
-    from openpyxl.styles import Alignment, Border, Side
-    from openpyxl.worksheet.filters import FilterColumn, Filters
-    try:
-        from PIL import ImageFont
-    except Exception:
-        ImageFont = None
+    from PIL import ImageFont
+except Exception:
+    ImageFont = None
 
 
 DEFAULT_HOST = os.environ.get("JIRA_HOST", "")

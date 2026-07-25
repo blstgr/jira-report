@@ -413,6 +413,36 @@ def test_run_jira_setup_invalid_token_exits_cleanly(monkeypatch):
     assert "token" in str(exc_info.value).lower()
 
 
+def test_ensure_openpyxl_already_importable_skips_prompt():
+    with patch.object(launcher, "_openpyxl_importable", return_value=True), \
+         patch("builtins.input", side_effect=AssertionError("should not prompt")):
+        assert launcher._ensure_openpyxl() is True
+
+
+def test_ensure_openpyxl_declined_returns_false():
+    with patch.object(launcher, "_openpyxl_importable", return_value=False), \
+         patch("builtins.input", return_value="n"):
+        assert launcher._ensure_openpyxl() is False
+
+
+def test_ensure_openpyxl_accepted_install_succeeds():
+    success = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+    with patch.object(launcher, "_openpyxl_importable", return_value=False), \
+         patch("builtins.input", return_value="y"), \
+         patch.object(launcher.subprocess, "run", return_value=success) as fake_run:
+        assert launcher._ensure_openpyxl() is True
+    args = fake_run.call_args[0][0]
+    assert args == [launcher.sys.executable, "-m", "pip", "install", "openpyxl"]
+
+
+def test_ensure_openpyxl_accepted_install_fails():
+    fail = type("R", (), {"returncode": 1, "stdout": "", "stderr": "network error"})()
+    with patch.object(launcher, "_openpyxl_importable", return_value=False), \
+         patch("builtins.input", return_value="y"), \
+         patch.object(launcher.subprocess, "run", return_value=fail):
+        assert launcher._ensure_openpyxl() is False
+
+
 def test_ensure_jira_token_does_not_wrap_interactive_setup_in_spinner():
     # Regression: run_jira_setup() must NOT run inside run_spinner()'s
     # background-thread animation — the spinner redraws over stdout every

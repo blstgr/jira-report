@@ -684,6 +684,36 @@ def _check_jira_reachability(host, token):
         return "error"
 
 
+def _openpyxl_importable():
+    try:
+        import openpyxl  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _ensure_openpyxl():
+    """jira-report.py needs openpyxl to build the Excel file, but it fails
+    at its own top-level import if missing — same chicken-and-egg problem
+    as Python itself not being able to check for Python — so check here,
+    under the same python executable jira-report.py will actually run
+    under, before ever invoking it."""
+    if _openpyxl_importable():
+        return True
+    print("openpyxl is not installed, and we need it to build the report.")
+    answer = input("Do you agree to install it? (y/n): ").strip().lower()
+    if answer not in ("y", "yes"):
+        return False
+    result = run_spinner(
+        "Installing openpyxl...",
+        lambda: subprocess.run([sys.executable, "-m", "pip", "install", "openpyxl"], capture_output=True, text=True),
+    )
+    if result.returncode != 0:
+        print((result.stdout or "") + (result.stderr or ""))
+        return False
+    return True
+
+
 def run_jira_setup():
     print("\nJira is not set up on this computer yet.")
     host = ""
@@ -1460,6 +1490,11 @@ def main():
         cmd.extend(["--exclude", value])
 
     ensure_jira_token()
+    if not _ensure_openpyxl():
+        raise SystemExit(
+            f"openpyxl is required to build the report. Install it yourself with:\n"
+            f"    {sys.executable} -m pip install openpyxl\nthen run this tool again."
+        )
     if not update_run:
         status_line("Building report...")
     env = os.environ.copy()

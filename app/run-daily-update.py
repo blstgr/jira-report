@@ -23,6 +23,31 @@ STATE = _LOCAL if _LOCAL.exists() else _TEMPLATE
 STAMP = ROOT / ".last-daily-run-utc"
 
 
+def _openpyxl_importable():
+    try:
+        import openpyxl  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def _ensure_openpyxl():
+    """jira-report.py needs openpyxl but fails at its own top-level import
+    if it's missing, so check here first, under the same python executable
+    it'll run under. This runs headless (launchd, no one watching) — unlike
+    roadmap-launcher.py's interactive y/n version, there's no one to ask, so
+    just attempt the install and log the outcome."""
+    if _openpyxl_importable():
+        return True
+    print("[setup] openpyxl not found — installing automatically for this scheduled run...", flush=True)
+    result = subprocess.run([sys.executable, "-m", "pip", "install", "openpyxl"], capture_output=True, text=True)
+    print(f"[setup] pip install openpyxl: rc={result.returncode}", flush=True)
+    if result.returncode != 0:
+        print((result.stdout or "") + (result.stderr or ""), flush=True)
+        return False
+    return True
+
+
 def load_update_schedule():
     """Return (hour, minute, tz_name) from settings, defaulting to 08:00 UTC."""
     try:
@@ -65,6 +90,10 @@ def main():
 
     force = "--force" in sys.argv
     if not force and STAMP.exists() and STAMP.read_text().strip() == today_key:
+        return
+
+    if not _ensure_openpyxl():
+        print("[setup] couldn't install openpyxl — skipping this run.", flush=True)
         return
 
     cmd = [
