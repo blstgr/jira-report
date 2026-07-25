@@ -627,12 +627,39 @@ def daily_job_exists():
     return False
 
 
+def _resolve_npx():
+    """Find npx even when this process has a restricted PATH that doesn't
+    include Homebrew's bin dir — e.g. when python3 resolves to the Xcode
+    Command Line Tools' bundled stub instead of a real install."""
+    import shutil
+    found = shutil.which("npx")
+    if found:
+        return found
+    for candidate in ("/opt/homebrew/bin/npx", "/usr/local/bin/npx"):
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+_NPX_NOT_FOUND_MESSAGE = (
+    "Couldn't find 'npx' (part of Node.js) on this computer. "
+    "Install Node.js from https://nodejs.org (or `brew install node` if you use Homebrew), "
+    "then run this tool again."
+)
+
+
 def run_jira_setup():
     print("\nJira is not set up on this computer yet.")
     print("We are going to open the Atlassian setup flow now.")
     print("Follow the prompts in the README-guided setup.")
+    npx = _resolve_npx()
+    if not npx:
+        raise SystemExit(_NPX_NOT_FOUND_MESSAGE)
+    cmd = [npx] + JIRA_SETUP_CMD[1:]
     try:
-        subprocess.run(JIRA_SETUP_CMD, cwd=ROOT, check=True)
+        subprocess.run(cmd, cwd=ROOT, check=True)
+    except FileNotFoundError:
+        raise SystemExit(_NPX_NOT_FOUND_MESSAGE)
     except subprocess.CalledProcessError as exc:
         if exc.returncode == 130:
             raise SystemExit("\nJira setup was cancelled. Run the tool again when you're ready to finish it.")

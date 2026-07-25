@@ -287,7 +287,8 @@ def test_run_jira_setup_ctrl_c_exits_cleanly_not_a_traceback():
     # (exit 130) all the way out of main(), printing a raw traceback instead
     # of a clean message telling the user what happened.
     import subprocess as _subprocess
-    with patch.object(launcher.subprocess, "run",
+    with patch.object(launcher, "_resolve_npx", return_value="/fake/npx"), \
+         patch.object(launcher.subprocess, "run",
                       side_effect=_subprocess.CalledProcessError(130, launcher.JIRA_SETUP_CMD)):
         with pytest.raises(SystemExit) as exc_info:
             launcher.run_jira_setup()
@@ -296,11 +297,49 @@ def test_run_jira_setup_ctrl_c_exits_cleanly_not_a_traceback():
 
 def test_run_jira_setup_other_failure_exits_cleanly():
     import subprocess as _subprocess
-    with patch.object(launcher.subprocess, "run",
+    with patch.object(launcher, "_resolve_npx", return_value="/fake/npx"), \
+         patch.object(launcher.subprocess, "run",
                       side_effect=_subprocess.CalledProcessError(1, launcher.JIRA_SETUP_CMD)):
         with pytest.raises(SystemExit) as exc_info:
             launcher.run_jira_setup()
     assert "code 1" in str(exc_info.value).lower()
+
+
+def test_run_jira_setup_missing_npx_upfront_exits_cleanly():
+    # Regression: a real user's `npx` wasn't found at all (no Node.js
+    # installed, or installed but not on the restricted PATH a
+    # double-clicked/Xcode-stub-python3 launch gets) — this used to crash
+    # with an unhandled FileNotFoundError traceback instead of a clear,
+    # actionable message.
+    with patch.object(launcher, "_resolve_npx", return_value=None):
+        with pytest.raises(SystemExit) as exc_info:
+            launcher.run_jira_setup()
+    assert "node.js" in str(exc_info.value).lower()
+
+
+def test_run_jira_setup_npx_disappears_between_check_and_exec():
+    # Belt-and-suspenders: even if _resolve_npx() finds something, the
+    # actual subprocess.run() call can still raise FileNotFoundError
+    # (e.g. a stale PATH entry) — must not crash with a raw traceback either.
+    with patch.object(launcher, "_resolve_npx", return_value="/fake/npx"), \
+         patch.object(launcher.subprocess, "run", side_effect=FileNotFoundError()):
+        with pytest.raises(SystemExit) as exc_info:
+            launcher.run_jira_setup()
+    assert "node.js" in str(exc_info.value).lower()
+
+
+def test_resolve_npx_falls_back_to_homebrew_path():
+    # When PATH lookup fails (restricted-context launch) but Node was
+    # installed via Homebrew, the explicit fallback locations must be tried.
+    with patch("shutil.which", return_value=None), \
+         patch("os.path.exists", side_effect=lambda p: p == "/opt/homebrew/bin/npx"):
+        assert launcher._resolve_npx() == "/opt/homebrew/bin/npx"
+
+
+def test_resolve_npx_returns_none_when_truly_absent():
+    with patch("shutil.which", return_value=None), \
+         patch("os.path.exists", return_value=False):
+        assert launcher._resolve_npx() is None
 
 
 def test_ensure_jira_token_does_not_wrap_interactive_setup_in_spinner():
