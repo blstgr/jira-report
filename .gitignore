@@ -30,10 +30,12 @@ data/raw-jira-snapshot.json
 # IDE
 .idea/
 
-# Personal debug/verification scripts and per-account skill files —
-# not part of the generic tool, not meant for the public repo
+# Personal debug/verification scripts, per-account skill files, and this
+# repo's own private push/exclusion notes — not part of the generic tool,
+# not meant for the public repo
 verify_sample.py
 skills/
+CLAUDE.md
 
 # Per-machine runtime state
 app/.last-daily-run-utc
