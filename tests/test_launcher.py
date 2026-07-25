@@ -305,16 +305,64 @@ def test_run_jira_setup_other_failure_exits_cleanly():
     assert "code 1" in str(exc_info.value).lower()
 
 
-def test_run_jira_setup_missing_npx_upfront_exits_cleanly():
+def test_run_jira_setup_missing_npx_declined_exits_cleanly():
     # Regression: a real user's `npx` wasn't found at all (no Node.js
     # installed, or installed but not on the restricted PATH a
     # double-clicked/Xcode-stub-python3 launch gets) — this used to crash
     # with an unhandled FileNotFoundError traceback instead of a clear,
-    # actionable message.
-    with patch.object(launcher, "_resolve_npx", return_value=None):
+    # actionable message. Here the user declines the install offer.
+    with patch.object(launcher, "_resolve_npx", return_value=None), \
+         patch("builtins.input", return_value="n"):
         with pytest.raises(SystemExit) as exc_info:
             launcher.run_jira_setup()
     assert "node.js" in str(exc_info.value).lower()
+
+
+def test_ensure_node_already_present_skips_all_prompts():
+    with patch.object(launcher, "_resolve_npx", return_value="/fake/npx"), \
+         patch("builtins.input", side_effect=AssertionError("should not prompt")):
+        assert launcher._ensure_node() is True
+
+
+def test_ensure_node_user_declines_node_install():
+    with patch.object(launcher, "_resolve_npx", return_value=None), \
+         patch("builtins.input", return_value="n"):
+        assert launcher._ensure_node() is False
+
+
+def test_ensure_node_installs_via_brew_when_already_present():
+    with patch.object(launcher, "_resolve_npx", side_effect=[None, "/fake/npx"]), \
+         patch.object(launcher, "_resolve_brew", return_value="/fake/brew"), \
+         patch.object(launcher.subprocess, "run") as fake_run, \
+         patch("builtins.input", return_value="y"):
+        assert launcher._ensure_node() is True
+    fake_run.assert_called_once_with(["/fake/brew", "install", "node"], check=True)
+
+
+def test_ensure_node_declines_homebrew_when_brew_missing():
+    with patch.object(launcher, "_resolve_npx", return_value=None), \
+         patch.object(launcher, "_resolve_brew", return_value=None), \
+         patch("builtins.input", side_effect=["y", "n"]):
+        assert launcher._ensure_node() is False
+
+
+def test_ensure_node_installs_homebrew_then_node():
+    with patch.object(launcher, "_resolve_npx", side_effect=[None, "/fake/npx"]), \
+         patch.object(launcher, "_resolve_brew", side_effect=[None, "/fake/brew"]), \
+         patch.object(launcher, "_install_homebrew", return_value=True) as fake_install_brew, \
+         patch.object(launcher.subprocess, "run") as fake_run, \
+         patch("builtins.input", side_effect=["y", "y"]):
+        assert launcher._ensure_node() is True
+    fake_install_brew.assert_called_once()
+    fake_run.assert_called_once_with(["/fake/brew", "install", "node"], check=True)
+
+
+def test_ensure_node_homebrew_install_fails():
+    with patch.object(launcher, "_resolve_npx", return_value=None), \
+         patch.object(launcher, "_resolve_brew", return_value=None), \
+         patch.object(launcher, "_install_homebrew", return_value=False), \
+         patch("builtins.input", side_effect=["y", "y"]):
+        assert launcher._ensure_node() is False
 
 
 def test_run_jira_setup_npx_disappears_between_check_and_exec():

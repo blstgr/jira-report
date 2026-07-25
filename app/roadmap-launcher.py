@@ -648,13 +648,75 @@ _NPX_NOT_FOUND_MESSAGE = (
 )
 
 
+def _resolve_brew():
+    import shutil
+    found = shutil.which("brew")
+    if found:
+        return found
+    for candidate in ("/opt/homebrew/bin/brew", "/usr/local/bin/brew"):
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def _confirm_install(name, reason):
+    print(f"{name} is not installed, and we need it {reason}.")
+    answer = input(f"Do you agree to install {name}? (y/n): ").strip().lower()
+    return answer in ("y", "yes")
+
+
+def _install_homebrew():
+    print("Installing Homebrew — this may ask for your Mac password and can take a few minutes...")
+    try:
+        import urllib.request
+        script = urllib.request.urlopen(
+            "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh", timeout=30
+        ).read().decode()
+        subprocess.run(["/bin/bash", "-c", script], check=True)
+    except Exception as exc:
+        print(f"Homebrew install failed: {exc}")
+        return False
+    return _resolve_brew() is not None
+
+
+def _install_node_via_brew(brew):
+    print("Installing Node.js via Homebrew — this can take a minute...")
+    try:
+        subprocess.run([brew, "install", "node"], check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        print(f"Node.js install failed: {exc}")
+        return False
+    return _resolve_npx() is not None
+
+
+def _ensure_node():
+    """Make sure npx is available, asking explicit y/n consent before
+    installing Node.js and, if needed, Homebrew first. Never installs
+    anything silently. Returns True if npx is usable by the end."""
+    if _resolve_npx():
+        return True
+    if not _confirm_install("Node.js", "to run the Jira setup step"):
+        return False
+    brew = _resolve_brew()
+    if not brew:
+        if not _confirm_install("Homebrew", "to install Node.js"):
+            return False
+        if not _install_homebrew():
+            return False
+        brew = _resolve_brew()
+        if not brew:
+            return False
+    return _install_node_via_brew(brew)
+
+
 def run_jira_setup():
+    if not _ensure_node():
+        raise SystemExit(_NPX_NOT_FOUND_MESSAGE)
+    npx = _resolve_npx()
+
     print("\nJira is not set up on this computer yet.")
     print("We are going to open the Atlassian setup flow now.")
     print("Follow the prompts in the README-guided setup.")
-    npx = _resolve_npx()
-    if not npx:
-        raise SystemExit(_NPX_NOT_FOUND_MESSAGE)
     cmd = [npx] + JIRA_SETUP_CMD[1:]
     try:
         subprocess.run(cmd, cwd=ROOT, check=True)
@@ -995,9 +1057,9 @@ def _run_targeted_edit(
                 update_timezone = raw_tz
 
     elif section == "status":
-        print("Which Jira statuses count as done? A task in any of these statuses is treated as finished — no more active dev work.")
+        print("Which Jira statuses count as done — no more active dev work you would like to track towards ETA?")
         new_statuses = prompt_list_or_default(
-            "Done statuses",
+            "Currently Done is",
             done_statuses or DEFAULT_DONE_STATUSES,
             required=True,
             empty_message="Please enter at least one status.",
@@ -1212,9 +1274,9 @@ def main():
             stage = 12
             continue
         if stage == 12:
-            print("Which Jira statuses count as done? A task in any of these statuses is treated as finished — no more active dev work.")
+            print("Which Jira statuses count as done — no more active dev work you would like to track towards ETA?")
             next_statuses = prompt_list_or_default(
-                "Done statuses",
+                "Currently Done is",
                 done_statuses or DEFAULT_DONE_STATUSES,
                 required=True,
                 empty_message="Please enter at least one status.",
