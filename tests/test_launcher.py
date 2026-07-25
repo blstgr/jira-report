@@ -281,6 +281,19 @@ def test_parse_update_time_invalid():
     assert launcher.parse_update_time("") is None
 
 
+def test_detect_system_timezone_uses_iana_name_from_localtime():
+    with patch("os.path.realpath", return_value="/usr/share/zoneinfo/Europe/Kyiv"):
+        assert launcher._detect_system_timezone() == "Europe/Kyiv"
+
+
+def test_detect_system_timezone_falls_back_to_utc_offset():
+    fake_now = launcher.dt.datetime(2026, 1, 1, tzinfo=launcher.dt.timezone(launcher.dt.timedelta(hours=3)))
+    with patch("os.path.realpath", return_value="/etc/localtime"), \
+         patch.object(launcher.dt, "datetime") as fake_datetime:
+        fake_datetime.now.return_value.astimezone.return_value = fake_now
+        assert launcher._detect_system_timezone() == "+03:00"
+
+
 def test_run_jira_setup_ctrl_c_exits_cleanly_not_a_traceback():
     # Regression: Ctrl-C during the interactive `npx @atlassian-dc-mcp/jira
     # setup` subprocess used to bubble up as an unhandled CalledProcessError
@@ -342,28 +355,70 @@ def test_ensure_node_skips_prompts_on_non_mac():
 
 
 def test_ensure_node_installs_via_brew_when_already_present():
+    success_result = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
     with patch.object(launcher, "_resolve_npx", side_effect=[None, "/fake/npx"]), \
          patch.object(launcher, "_resolve_brew", return_value="/fake/brew"), \
-         patch.object(launcher.subprocess, "run") as fake_run, \
+         patch.object(launcher.subprocess, "run", return_value=success_result) as fake_run, \
          patch("builtins.input", return_value="y"):
         assert launcher._ensure_node() is True
-    fake_run.assert_called_once_with(["/fake/brew", "install", "node"], check=True)
+    fake_run.assert_called_once_with(["/fake/brew", "install", "node"], capture_output=True, text=True)
 
 
-def test_install_node_via_brew_points_to_homebrew_own_fix_on_failure(capsys):
+def _fake_completed(returncode=0, stdout="", stderr=""):
+    return type("R", (), {"returncode": returncode, "stdout": stdout, "stderr": stderr})()
+
+
+def test_install_node_via_brew_declines_permission_fix_falls_back(capsys):
     # Regression: a real user hit `brew install node` failing because
     # /opt/homebrew had broken ownership (a common footgun from a prior
-    # `sudo brew ...`). Homebrew's own error already prints the exact fix
-    # (a `sudo chown` command) — our message must point back at it instead
-    # of burying it under a generic "install from nodejs.org" fallback.
-    import subprocess as _subprocess
-    with patch.object(launcher.subprocess, "run",
-                      side_effect=_subprocess.CalledProcessError(1, ["brew", "install", "node"])):
+    # `sudo brew ...`). If the user declines the auto-fix offer, the
+    # fallback message must still point back at Homebrew's own guidance.
+    fail_result = _fake_completed(1, stderr="Error: /opt/homebrew is not writable.\n  sudo chown -R rulz /opt/homebrew")
+    with patch.object(launcher.subprocess, "run", return_value=fail_result), \
+         patch("builtins.input", return_value="n"):
         result = launcher._install_node_via_brew("/fake/brew")
     assert result is False
     output = capsys.readouterr().out.lower()
     assert "chown" in output
     assert "admin" in output
+
+
+def test_install_node_via_brew_retries_after_permission_fix_accepted():
+    # User accepts the chown fix, it succeeds, and the retried install
+    # succeeds too — the whole thing should resolve to True.
+    fail_result = _fake_completed(1, stderr="Error: /opt/homebrew is not writable.")
+    prefix_result = _fake_completed(0, stdout="/opt/homebrew\n")
+    chown_result = _fake_completed(0)
+    retry_success = _fake_completed(0)
+    with patch.object(launcher.subprocess, "run",
+                      side_effect=[fail_result, prefix_result, chown_result, retry_success]), \
+         patch.object(launcher, "_resolve_npx", return_value="/fake/npx"), \
+         patch("builtins.input", return_value="y"):
+        assert launcher._install_node_via_brew("/fake/brew") is True
+
+
+def test_install_node_via_brew_generic_failure_does_not_offer_chown_fix():
+    # A failure with no "not writable"/"chown" signature (e.g. a network
+    # error) shouldn't trigger the permission-fix prompt at all.
+    fail_result = _fake_completed(1, stderr="Error: Failed to download resource.")
+    with patch.object(launcher.subprocess, "run", return_value=fail_result), \
+         patch("builtins.input", side_effect=AssertionError("should not prompt")):
+        assert launcher._install_node_via_brew("/fake/brew") is False
+
+
+def test_offer_to_fix_brew_permissions_declined():
+    prefix_result = _fake_completed(0, stdout="/opt/homebrew\n")
+    with patch.object(launcher.subprocess, "run", return_value=prefix_result), \
+         patch("builtins.input", return_value="n"):
+        assert launcher._offer_to_fix_brew_permissions("/fake/brew") is False
+
+
+def test_offer_to_fix_brew_permissions_chown_fails():
+    prefix_result = _fake_completed(0, stdout="/opt/homebrew\n")
+    chown_fail = _fake_completed(1)
+    with patch.object(launcher.subprocess, "run", side_effect=[prefix_result, chown_fail]), \
+         patch("builtins.input", return_value="y"):
+        assert launcher._offer_to_fix_brew_permissions("/fake/brew") is False
 
 
 def test_main_with_crash_log_saves_traceback_for_unexpected_errors(tmp_path, monkeypatch, capsys):
@@ -405,14 +460,15 @@ def test_ensure_node_declines_homebrew_when_brew_missing():
 
 
 def test_ensure_node_installs_homebrew_then_node():
+    success_result = type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
     with patch.object(launcher, "_resolve_npx", side_effect=[None, "/fake/npx"]), \
          patch.object(launcher, "_resolve_brew", side_effect=[None, "/fake/brew"]), \
          patch.object(launcher, "_install_homebrew", return_value=True) as fake_install_brew, \
-         patch.object(launcher.subprocess, "run") as fake_run, \
+         patch.object(launcher.subprocess, "run", return_value=success_result) as fake_run, \
          patch("builtins.input", side_effect=["y", "y"]):
         assert launcher._ensure_node() is True
     fake_install_brew.assert_called_once()
-    fake_run.assert_called_once_with(["/fake/brew", "install", "node"], check=True)
+    fake_run.assert_called_once_with(["/fake/brew", "install", "node"], capture_output=True, text=True)
 
 
 def test_ensure_node_homebrew_install_fails():

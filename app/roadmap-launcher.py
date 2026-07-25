@@ -679,20 +679,52 @@ def _install_homebrew():
     return _resolve_brew() is not None
 
 
+def _offer_to_fix_brew_permissions(brew):
+    """Homebrew's own fix for the common 'is not writable' error is always
+    the same shape: chown its prefix back to the current user. Use
+    `brew --prefix` + the real username rather than parsing Homebrew's
+    free-text suggestion, which can span multiple lines and change wording
+    between versions."""
+    prefix_result = subprocess.run([brew, "--prefix"], capture_output=True, text=True)
+    prefix = prefix_result.stdout.strip() or "/opt/homebrew"
+    user = os.environ.get("USER") or os.environ.get("LOGNAME")
+    if not user:
+        try:
+            user = os.getlogin()
+        except Exception:
+            return False
+    print(f"\nHomebrew's install directory ({prefix}) has the wrong file ownership — "
+          "a common issue after a prior 'sudo brew ...'.")
+    answer = input(f"Run 'sudo chown -R {user} {prefix}' now to fix it? (y/n): ").strip().lower()
+    if answer not in ("y", "yes"):
+        return False
+    fix_result = subprocess.run(["sudo", "chown", "-R", user, prefix])
+    return fix_result.returncode == 0
+
+
 def _install_node_via_brew(brew):
     print("Installing Node.js via Homebrew — this can take a minute...")
-    try:
-        subprocess.run([brew, "install", "node"], check=True)
-    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
-        print(f"Node.js install via Homebrew failed: {exc}")
-        print(
-            "If Homebrew printed a fix above (often a 'sudo chown ...' command for "
-            "/opt/homebrew), run that in Terminal, then run this tool again — "
-            "Homebrew itself refuses to install packages as root, so being an admin "
-            "doesn't skip this step."
-        )
-        return False
-    return _resolve_npx() is not None
+    result = subprocess.run([brew, "install", "node"], capture_output=True, text=True)
+    output = (result.stdout or "") + (result.stderr or "")
+    print(output)
+    if result.returncode == 0:
+        return _resolve_npx() is not None
+
+    if "not writable" in output.lower() or "chown" in output.lower():
+        if _offer_to_fix_brew_permissions(brew):
+            print("Retrying Node.js install...")
+            retry = subprocess.run([brew, "install", "node"], capture_output=True, text=True)
+            print((retry.stdout or "") + (retry.stderr or ""))
+            if retry.returncode == 0:
+                return _resolve_npx() is not None
+
+    print(
+        "If Homebrew printed a fix above (often a 'sudo chown ...' command for "
+        "its install directory), run that in Terminal, then run this tool again — "
+        "Homebrew itself refuses to install packages as root, so being an admin "
+        "doesn't skip this step."
+    )
+    return False
 
 
 def _ensure_node():
@@ -830,6 +862,26 @@ def parse_update_time(raw):
     except Exception:
         pass
     return None
+
+
+def _detect_system_timezone():
+    """Best-effort local timezone, no extra dependency required: the IANA
+    name if /etc/localtime resolves to one (handles DST correctly), else
+    the current UTC offset (parse_timezone in run-daily-update.py accepts
+    either form)."""
+    try:
+        resolved = os.path.realpath("/etc/localtime")
+        if "zoneinfo/" in resolved:
+            return resolved.split("zoneinfo/", 1)[1]
+    except Exception:
+        pass
+    offset = dt.datetime.now().astimezone().utcoffset()
+    if offset is None:
+        return "UTC"
+    total_minutes = int(offset.total_seconds() // 60)
+    sign = "+" if total_minutes >= 0 else "-"
+    hours, minutes = divmod(abs(total_minutes), 60)
+    return f"{sign}{hours:02d}:{minutes:02d}"
 
 
 def save_draft_state(include_keywords=None, excludes=None, project_keys=None, output=None,
@@ -1233,7 +1285,7 @@ def main():
         drive_folder = ""
         google_client_secrets = None
         update_time = "08:00"
-        update_timezone = "UTC"
+        update_timezone = _detect_system_timezone()
         auto_update = True
 
     while True:
@@ -1410,14 +1462,9 @@ def main():
                     continue
                 update_time = f"{parsed[0]:02d}:{parsed[1]:02d}"
 
-            print(f"Timezone (e.g. Europe/Kyiv, America/New_York, UTC){f' [{update_timezone}]' if update_timezone else ''}:")
-            raw_tz = input("→ New timezone / Enter to skip: ").strip()
-            if raw_tz in {"/back", "/b"}:
-                continue
-            if raw_tz:
-                update_timezone = raw_tz
             if not update_timezone:
-                update_timezone = "UTC"
+                update_timezone = _detect_system_timezone()
+            print(f"Using this computer's timezone for the schedule: {update_timezone}")
             save_draft_state(update_time=update_time, update_timezone=update_timezone, auto_update=auto_update)
             break
 
