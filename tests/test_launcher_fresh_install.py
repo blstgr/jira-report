@@ -71,12 +71,11 @@ def sandboxed_launcher(tmp_path, monkeypatch):
     # side); a fresh install must reach this point without crashing first.
     monkeypatch.setattr(launcher, "ensure_jira_token", lambda: None)
 
-    # The only subprocess.run this scripted path reaches is the final
+    # The only subprocess call this scripted path reaches is the final
     # jira-report.py invocation (Drive sync and auto-update are both
     # declined below, so their subprocess calls are never made). Return the
     # "ran fine, nothing changed" exit code so main() completes normally.
-    fake_result = type("R", (), {"returncode": 88})()
-    monkeypatch.setattr(launcher.subprocess, "run", lambda *a, **kw: fake_result)
+    monkeypatch.setattr(launcher, "_run_streaming_and_capture", lambda cmd, cwd, env: (88, ""))
 
     return launcher, settings_dir
 

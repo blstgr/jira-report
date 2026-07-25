@@ -144,11 +144,11 @@ The tool works on both Mac and Windows.
 
 A terminal window opens and walks you through the rest.
 
-> **Mac: first-run security warning.** Since `roadmap` is a downloaded, unsigned script, macOS Gatekeeper will block it the first time with a message like *"roadmap" can't be opened*. To allow it:
-> 1. Try to open `roadmap` once so macOS registers the block.
-> 2. Open the Apple menu () → **System Settings**.
-> 3. Click **Privacy & Security** in the sidebar, then scroll down to the security section.
-> 4. Find the message about `"roadmap"` being blocked and click **Open Anyway**.
+> **Mac: first-run security warning.** Since `roadmap` is a downloaded, unsigned script, macOS Gatekeeper will block it the first time. To allow it:
+> 1. Try to open `roadmap` once — macOS says *"roadmap" Not Opened* — click **Done**.
+> 2. Open the Apple menu () → **System Settings** → **Privacy & Security**, and scroll down to the Security section.
+> 3. Click **Open Anyway** next to the message about `roadmap`.
+> 4. A dialog appears asking to confirm — click **Open Anyway** again, then enter your Mac password or use Touch ID.
 >
 > You only need to do this once.
 
@@ -184,4 +184,4 @@ When you open the tool and a report already exists, it asks what to do:
 
 ## 6. If something goes wrong
 
-If the tool hits an unexpected error, it saves a log file to `roadmap-crash-log.txt` in your home folder and tells you the exact path. Send that file along with a short description of what you were doing — that's enough to debug most issues without needing to reproduce them.
+If the tool hits an unexpected error — including a crash inside the report-building step itself, not just the launcher — it saves a log file to `logs/roadmap-crash-log.txt` inside the `jira-report` folder and tells you the exact path. Send that file along with a short description of what you were doing — that's enough to debug most issues without needing to reproduce them.

@@ -502,6 +502,86 @@ def test_ensure_openpyxl_accepted_install_fails():
         assert launcher._ensure_openpyxl() is False
 
 
+def test_write_crash_log_creates_logs_dir_and_writes_content(tmp_path, monkeypatch):
+    log_path = tmp_path / "logs" / "roadmap-crash-log.txt"
+    monkeypatch.setattr(launcher, "_CRASH_LOG_PATH", log_path)
+    result_path = launcher._write_crash_log("some traceback text here")
+    assert result_path == log_path
+    content = log_path.read_text()
+    assert "some traceback text here" in content
+    assert "Python:" in content
+    assert "Platform:" in content
+
+
+def test_main_with_crash_log_saves_traceback_for_unexpected_errors(tmp_path, monkeypatch, capsys):
+    # There's no other log file for the interactive launcher (see the
+    # earlier "are there log files" discussion) — any genuinely unexpected
+    # exception must be saved somewhere the user can actually send, not
+    # just scroll past in the terminal. Lives in a repo-relative logs/
+    # folder, not the home directory, so it's always in a predictable spot
+    # next to the tool itself.
+    log_path = tmp_path / "logs" / "roadmap-crash-log.txt"
+    monkeypatch.setattr(launcher, "_CRASH_LOG_PATH", log_path)
+    with patch.object(launcher, "main", side_effect=RuntimeError("boom, unexpected")):
+        with pytest.raises(SystemExit) as exc_info:
+            launcher._main_with_crash_log()
+    assert exc_info.value.code == 1
+    assert log_path.exists()
+    content = log_path.read_text()
+    assert "boom, unexpected" in content
+    assert str(log_path) in capsys.readouterr().out
+
+
+def test_main_with_crash_log_lets_our_own_system_exit_through_unchanged():
+    # A deliberate, friendly SystemExit (e.g. from run_jira_setup's own
+    # error handling) must NOT be caught and turned into a crash log —
+    # SystemExit isn't an Exception subclass, so this should just pass
+    # through untouched.
+    with patch.object(launcher, "main", side_effect=SystemExit("friendly message")):
+        with pytest.raises(SystemExit) as exc_info:
+            launcher._main_with_crash_log()
+    assert str(exc_info.value) == "friendly message"
+
+
+def test_run_streaming_and_capture_relays_output_and_returncode():
+    # Regression: jira-report.py's own crash tracebacks used to just print
+    # to the terminal and vanish — nothing captured them for the crash log.
+    # This is what makes that possible: live-relay AND capture at once.
+    proc = MagicMock()
+    proc.stdout = [b"line one\n", b"line two\n"]
+    proc.returncode = 1
+    with patch.object(launcher.subprocess, "Popen", return_value=proc) as fake_popen:
+        returncode, captured = launcher._run_streaming_and_capture(["cmd"], "/some/cwd", {"X": "1"})
+    fake_popen.assert_called_once_with(
+        ["cmd"], cwd="/some/cwd", env={"X": "1"},
+        stdout=launcher.subprocess.PIPE, stderr=launcher.subprocess.STDOUT,
+    )
+    assert returncode == 1
+    assert captured == "line one\nline two\n"
+    proc.wait.assert_called_once()
+
+
+def test_jira_token_is_valid_returns_false_when_host_is_empty(monkeypatch):
+    # Regression: a real user's account had a cached token but no recorded
+    # JIRA_HOST. The empty-host request raised urllib.error.URLError
+    # ("no host given"), which the generic exception handler below used to
+    # treat as "probably a VPN hiccup, assume the token's fine" — letting
+    # ensure_jira_token() skip run_jira_setup() forever, so jira-report.py's
+    # own subprocess kept crashing with the same empty-host error downstream.
+    monkeypatch.delenv("JIRA_HOST", raising=False)
+    assert launcher.jira_token_is_valid("some-cached-token-value") is False
+
+
+def test_jira_token_is_valid_still_optimistic_on_genuine_network_error(monkeypatch):
+    # Confirms the fix is scoped to the empty-host case specifically — a
+    # real VPN/network hiccup with a host actually configured should still
+    # optimistically assume the token is fine (existing, intentional
+    # behavior elsewhere relies on this).
+    monkeypatch.setenv("JIRA_HOST", "track.namecheap.net")
+    with patch.object(launcher.urllib.request, "urlopen", side_effect=launcher.urllib.error.URLError("timed out")):
+        assert launcher.jira_token_is_valid("some-token") is True
+
+
 def test_ensure_jira_token_does_not_wrap_interactive_setup_in_spinner():
     # Regression: run_jira_setup() must NOT run inside run_spinner()'s
     # background-thread animation — the spinner redraws over stdout every

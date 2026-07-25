@@ -578,6 +578,14 @@ def jira_token_is_valid(token):
     # Read live — the host may have only just been collected during this
     # same run (see run_jira_setup()), so a cached value would be stale.
     host = os.environ.get("JIRA_HOST", "")
+    if not host:
+        # A malformed "https:///..." request raises urllib.error.URLError,
+        # which the generic exception handler below treats as "probably a
+        # VPN hiccup, assume the token's fine" — that let an account with
+        # an existing cached token but no recorded host skip run_jira_setup()
+        # forever, so jira-report.py's own subprocess kept hitting the same
+        # empty-host crash. An empty host is never "probably fine".
+        return False
     req = urllib.request.Request(
         f"https://{host}/rest/api/2/myself",
         headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
@@ -902,6 +910,21 @@ def save_draft_state(include_keywords=None, excludes=None, project_keys=None, ou
     if auto_update is not None:
         current["auto_update"] = auto_update
     save_state(current)
+
+
+def _run_streaming_and_capture(cmd, cwd, env):
+    """Run cmd, printing its combined stdout+stderr live line-by-line (so
+    jira-report.py's own progress spinner still shows immediately) while
+    also capturing everything, so it can be saved to the crash log if the
+    process fails with something we don't already handle explicitly."""
+    buf = []
+    proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    for line in proc.stdout:
+        sys.stdout.buffer.write(line)
+        sys.stdout.buffer.flush()
+        buf.append(line.decode(errors="replace"))
+    proc.wait()
+    return proc.returncode, "".join(buf)
 
 
 def run_spinner(message, work_fn):
@@ -1529,23 +1552,11 @@ def main():
     if jira_token:
         env["JIRA_TOKEN"] = jira_token
     try:
-        if update_run:
-            _buf = []
-            _proc = subprocess.Popen(cmd, cwd=ROOT, env=env,
-                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            for _line in _proc.stdout:
-                sys.stdout.buffer.write(_line)
-                sys.stdout.buffer.flush()
-                _buf.append(_line.decode(errors="replace"))
-            _proc.wait()
-            _proc_out = "".join(_buf)
-            result = type("R", (), {"returncode": _proc.returncode})()
-        else:
-            result = subprocess.run(cmd, cwd=ROOT, env=env)
+        returncode, _proc_out = _run_streaming_and_capture(cmd, ROOT, env)
+        result = type("R", (), {"returncode": returncode})()
     except KeyboardInterrupt:
         raise SystemExit(0)
     if update_run:
-        pass  # _proc_out already set above
         vpn_keywords = ("timed out", "connection refused", "Operation timed out",
                         "VPN", "Cannot connect", "network", "dropped")
         if result.returncode == 87 or any(k.lower() in _proc_out.lower() for k in vpn_keywords):
@@ -1570,10 +1581,8 @@ def main():
         if jira_token:
             env["JIRA_TOKEN"] = jira_token
         try:
-            if update_run:
-                result = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True, text=True)
-            else:
-                result = subprocess.run(cmd, cwd=ROOT, env=env)
+            returncode, _proc_out = _run_streaming_and_capture(cmd, ROOT, env)
+            result = type("R", (), {"returncode": returncode})()
         except KeyboardInterrupt:
             raise SystemExit(0)
     if result.returncode == 87:
@@ -1587,7 +1596,11 @@ def main():
             status_line(f"✓ Report will be automatically updated daily at {sched_time} {sched_tz}.")
         return
     if result.returncode != 0:
-        print_line("Report generation stopped. Please adjust the keywords and try again.")
+        if "Traceback (most recent call last):" in _proc_out:
+            log_path = _write_crash_log(_proc_out)
+            print_line(f"Report generation crashed. A log was saved to:\n    {log_path}\nPlease send that file so this can be debugged.")
+        else:
+            print_line("Report generation stopped. Please adjust the keywords and try again.")
         raise SystemExit(result.returncode)
     status_line("✓ Report built.")
 
@@ -1631,6 +1644,23 @@ def main():
         print(f"Auto-update installed. Next run at {sched_time} {sched_tz}.")
 
 
+_CRASH_LOG_PATH = ROOT / "logs" / "roadmap-crash-log.txt"
+
+
+def _write_crash_log(body):
+    """Shared by both crash paths: an unhandled exception in this process
+    itself, and an unhandled crash inside the jira-report.py subprocess it
+    launches (see the report-building call in main()) — one file, one
+    place to look, regardless of which process actually failed."""
+    import platform as _platform
+    _CRASH_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(_CRASH_LOG_PATH, "w") as f:
+        f.write(f"Python: {sys.version}\n")
+        f.write(f"Platform: {_platform.platform()}\n\n")
+        f.write(body)
+    return _CRASH_LOG_PATH
+
+
 def _main_with_crash_log():
     try:
         main()
@@ -1642,13 +1672,8 @@ def _main_with_crash_log():
         # (those aren't caught here — SystemExit isn't an Exception subclass)
         # is a genuine bug. Save enough to actually debug it, since there's
         # no other log file for the interactive launcher.
-        import platform as _platform
         import traceback as _traceback
-        log_path = Path.home() / "roadmap-crash-log.txt"
-        with open(log_path, "w") as f:
-            f.write(f"Python: {sys.version}\n")
-            f.write(f"Platform: {_platform.platform()}\n\n")
-            _traceback.print_exc(file=f)
+        log_path = _write_crash_log(_traceback.format_exc())
         print(f"\nSomething went wrong. A log was saved to:\n    {log_path}\nPlease send that file so this can be debugged.")
         raise SystemExit(1)
 

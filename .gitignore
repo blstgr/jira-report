@@ -17,6 +17,7 @@ app/.DS_Store
 
 # Logs
 app/launchd.log
+logs/
 
 # Generated report output
 report/
