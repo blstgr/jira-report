@@ -42,6 +42,16 @@ def _ensure_openpyxl():
         return True
     print("[setup] openpyxl not found — installing automatically for this scheduled run...", flush=True)
     result = subprocess.run([sys.executable, "-m", "pip", "install", "openpyxl"], capture_output=True, text=True)
+    if result.returncode != 0 and "externally-managed-environment" in (result.stderr or ""):
+        # Homebrew's python3.11+ refuses a plain `pip install` (PEP 668) —
+        # this runs unattended via launchd with no one to pick a venv/pipx
+        # path instead, and this install is scoped to one pure-Python
+        # package this tool already depends on, so overriding is safe here.
+        print("[setup] externally-managed-environment — retrying with --break-system-packages...", flush=True)
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--break-system-packages", "openpyxl"],
+            capture_output=True, text=True,
+        )
     print(f"[setup] pip install openpyxl: rc={result.returncode}", flush=True)
     if result.returncode != 0:
         print((result.stdout or "") + (result.stderr or ""), flush=True)
@@ -131,6 +141,11 @@ def main():
 
     if not _ensure_openpyxl():
         print("[setup] couldn't install openpyxl — skipping this run.", flush=True)
+        # This runs headless with nobody watching /tmp/jira-report-launchd.log
+        # — without a notification, a scheduled update can silently stop
+        # working indefinitely (this exact failure mode sat unnoticed across
+        # multiple days before anyone realized the report had gone stale).
+        _notify("Scheduled update couldn't install a required package (openpyxl) — check the log.")
         return
 
     cmd = [

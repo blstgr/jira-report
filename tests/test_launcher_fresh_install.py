@@ -82,6 +82,13 @@ def sandboxed_launcher(tmp_path, monkeypatch):
     # "ran fine, nothing changed" exit code so main() completes normally.
     monkeypatch.setattr(launcher, "_run_streaming_and_capture", lambda cmd, cwd, env, **kw: (88, ""))
 
+    # _send_notification() shells out to the REAL terminal-notifier with no
+    # test-mode guard — a prior test here genuinely fired live macOS
+    # notifications on every `pytest` run (spoofed as coming from Script
+    # Editor, since that's the sender id the code impersonates). Mock it
+    # defensively even though this specific path doesn't currently reach it.
+    monkeypatch.setattr(launcher, "_send_notification", lambda message: None)
+
     return launcher, settings_dir
 
 
@@ -153,6 +160,14 @@ def sandboxed_launcher_with_existing_settings(tmp_path, monkeypatch):
         lambda cmd, cwd, env, **kw: (captured_cmds.append(cmd) or 88, "")
     )
 
+    # Regression: this test drives the "edit" action, which sets
+    # update_run=True — combined with the mocked returncode 88 above, that
+    # reaches _send_notification("All quiet on the Jira front..."), which
+    # shells out to the REAL terminal-notifier with no test-mode guard.
+    # Every run of this test fired a live macOS notification (spoofed as
+    # coming from Script Editor) until this was mocked.
+    monkeypatch.setattr(launcher, "_send_notification", lambda message: None)
+
     return launcher, settings_dir, captured_cmds
 
 
@@ -181,3 +196,26 @@ def test_editing_keywords_routes_through_update_not_a_bare_rebuild(sandboxed_lau
     assert len(captured_cmds) == 1
     assert "--update" in captured_cmds[0]
     assert "--fresh" not in captured_cmds[0]
+
+
+def test_editing_keywords_sends_notification_through_the_mock_not_the_real_notifier(
+    sandboxed_launcher_with_existing_settings, monkeypatch
+):
+    # This exercises the exact code path that used to fire a real, live
+    # macOS notification on every test run (update_run=True + returncode 88
+    # -> _send_notification("All quiet on the Jira front...") -> real
+    # terminal-notifier, spoofed as sent by Script Editor). Asserting the
+    # mock was called (instead of just letting it no-op silently) keeps this
+    # honest — if _send_notification's monkeypatch above is ever removed or
+    # broken, this test would still pass without noticing the leak back to
+    # a real notification, so the assertion has to be on the spy itself.
+    launcher, settings_dir, captured_cmds = sandboxed_launcher_with_existing_settings
+    sent = []
+    monkeypatch.setattr(launcher, "_send_notification", lambda message: sent.append(message))
+    answers = ScriptedInput(["edit", "keyword", "", "", ""])
+    monkeypatch.setattr(builtins, "input", answers)
+    monkeypatch.setattr(sys, "argv", ["roadmap-launcher.py"])
+
+    launcher.main()
+
+    assert sent == ["All quiet on the Jira front. Come back when someone actually does something."]

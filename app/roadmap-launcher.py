@@ -1209,7 +1209,17 @@ def _run_targeted_edit(
 
 
 def _send_notification(message: str) -> None:
-    """Send a macOS notification via terminal-notifier (no-op on other platforms)."""
+    """Send a macOS notification via terminal-notifier (no-op on other platforms).
+
+    Belt-and-suspenders PYTEST_CURRENT_TEST check: this has no per-call
+    test-mode flag, so any test exercising main()'s update_run path that
+    forgets to monkeypatch this out would fire a REAL, live notification —
+    that happened here (spoofed as sent by Script Editor, since that's the
+    sender id below), and a test that quietly spams the real machine still
+    passes, so there was no signal anything was wrong.
+    """
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
     if sys.platform != "darwin":
         return
     import shutil as _shutil

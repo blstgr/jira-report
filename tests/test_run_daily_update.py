@@ -107,6 +107,59 @@ def test_ensure_openpyxl_missing_install_fails_returns_false():
         assert rdu._ensure_openpyxl() is False
 
 
+def test_ensure_openpyxl_retries_with_break_system_packages_on_pep668():
+    # Regression: Homebrew's python3.11+ refuses a plain `pip install`
+    # under PEP 668 ("externally-managed-environment") — a real scheduled
+    # run hit exactly this and silently failed every day with nobody
+    # noticing, since the only visible trace was a line in a /tmp log file.
+    pep668_fail = MagicMock(returncode=1, stdout="", stderr="error: externally-managed-environment\n...")
+    success = MagicMock(returncode=0, stdout="", stderr="")
+    with patch.object(rdu, "_openpyxl_importable", return_value=False), \
+         patch.object(rdu.subprocess, "run", side_effect=[pep668_fail, success]) as fake_run:
+        assert rdu._ensure_openpyxl() is True
+    assert fake_run.call_count == 2
+    second_call_args = fake_run.call_args_list[1][0][0]
+    assert second_call_args == [rdu.sys.executable, "-m", "pip", "install", "--break-system-packages", "openpyxl"]
+
+
+def test_ensure_openpyxl_pep668_retry_still_fails_returns_false():
+    pep668_fail = MagicMock(returncode=1, stdout="", stderr="error: externally-managed-environment\n...")
+    still_fails = MagicMock(returncode=1, stdout="", stderr="permission denied")
+    with patch.object(rdu, "_openpyxl_importable", return_value=False), \
+         patch.object(rdu.subprocess, "run", side_effect=[pep668_fail, still_fails]) as fake_run:
+        assert rdu._ensure_openpyxl() is False
+    assert fake_run.call_count == 2
+
+
+def test_ensure_openpyxl_non_pep668_failure_does_not_retry():
+    fail = MagicMock(returncode=1, stdout="", stderr="no network")
+    with patch.object(rdu, "_openpyxl_importable", return_value=False), \
+         patch.object(rdu.subprocess, "run", return_value=fail) as fake_run:
+        assert rdu._ensure_openpyxl() is False
+    assert fake_run.call_count == 1
+
+
+def test_main_notifies_when_openpyxl_cannot_be_installed(tmp_path, monkeypatch):
+    # Regression: this used to just print to a log file nobody watches and
+    # return — a scheduled update could silently stop working indefinitely.
+    state_path = tmp_path / "roadmap-settings.local.json"
+    state_path.write_text(json.dumps({"update_time": "08:00", "update_timezone": "UTC"}))
+    monkeypatch.setattr(rdu, "STATE", state_path)
+    stamp_path = tmp_path / ".last-daily-run-utc"
+    monkeypatch.setattr(rdu, "STAMP", stamp_path)
+    monkeypatch.setattr(rdu, "_restore_jira_host_from_settings", lambda: None)
+    monkeypatch.setattr(rdu, "_restore_jira_host_from_external_config", lambda: None)
+    monkeypatch.setattr(rdu, "_ensure_openpyxl", lambda: False)
+    monkeypatch.setattr(sys, "argv", ["run-daily-update.py"])
+    notified = []
+    monkeypatch.setattr(rdu, "_notify", lambda message, open_url="": notified.append(message))
+
+    rdu.main()
+
+    assert len(notified) == 1
+    assert "openpyxl" in notified[0]
+
+
 def test_restore_jira_host_from_settings_when_env_unset(state_file, monkeypatch):
     monkeypatch.delenv("JIRA_HOST", raising=False)
     rdu.STATE = state_file(jira_host="track.example.com")
