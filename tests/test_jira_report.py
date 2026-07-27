@@ -446,6 +446,46 @@ def test_detect_epic_name_field_ids_falls_back_to_default_when_nothing_matches()
     assert jr.detect_epic_name_field_ids([]) == ["customfield_10011"]
 
 
+def _epic(key, summary):
+    return {"key": key, "fields": {"summary": summary, "issuetype": {"name": "Epic"}}}
+
+
+def test_fetch_epics_by_key_builds_key_to_epic_map():
+    original_jget = jr.jget
+    jr.jget = lambda *a, **kw: {
+        "issues": [_epic("ABC-1", "Checkout Redesign: core"), _epic("ABC-2", "Checkout Redesign: post-release")],
+        "total": 2,
+    }
+    try:
+        result = jr.fetch_epics_by_key({"ABC-1", "ABC-2"}, "summary,status")
+    finally:
+        jr.jget = original_jget
+    assert set(result.keys()) == {"ABC-1", "ABC-2"}
+    assert result["ABC-1"]["fields"]["summary"] == "Checkout Redesign: core"
+
+
+def test_fetch_epics_by_key_chunks_across_batch_size():
+    # Regression coverage for the reason this exists at all: re-checking an
+    # existing report's rows against edited keywords needs the epics'
+    # summary text, which isn't persisted to the xlsx (only the epic key
+    # is) — so it has to be re-fetched, batched the same way epic discovery
+    # already is elsewhere.
+    original_jget = jr.jget
+    calls = []
+
+    def _fake_jget(url, context=None):
+        calls.append(url)
+        return {"issues": [_epic(f"ABC-{len(calls)}", "x")], "total": 1}
+
+    jr.jget = _fake_jget
+    try:
+        keys = {f"ABC-{i}" for i in range(1, jr.EPIC_BATCH_SIZE + 5)}
+        jr.fetch_epics_by_key(keys, "summary")
+    finally:
+        jr.jget = original_jget
+    assert len(calls) == 2  # more keys than EPIC_BATCH_SIZE -> 2 batches
+
+
 if __name__ == "__main__":
     import traceback
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

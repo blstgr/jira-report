@@ -820,6 +820,23 @@ def epic_matches_any_keyword(epic, keywords, epic_name_field_ids):
     return any(epic_matches_keyword(epic, keyword, epic_name_field_ids) for keyword in keywords)
 
 
+def fetch_epics_by_key(epic_keys, epic_fields):
+    """Fetch a batch of epics by key (chunked like elsewhere, to stay within
+    JQL length limits), for re-checking existing report rows against the
+    CURRENT include/exclude keyword scope during --update. Rows only store
+    the epic KEY (see build_xlsx's "tasks" sheet columns) — the epic summary
+    text needed for a real keyword match isn't persisted, so this re-fetches
+    the live epic rather than trying to approximate a match from stripped-
+    down stored data."""
+    result = {}
+    for batch in chunked(sorted(epic_keys), EPIC_BATCH_SIZE):
+        jql = "key in (" + ", ".join(batch) + ")"
+        found = fetch_all_search(jql, epic_fields, context="re-checking existing epics against current keywords")
+        for epic in found:
+            result[epic["key"]] = epic
+    return result
+
+
 def substream_name(epic_name, epic_summary, feature):
     epic_name_clean = (epic_name or "").strip()
     epic_summary_clean = (epic_summary or "").strip()
@@ -2739,12 +2756,49 @@ def main():
         keys_to_refresh = []
         update_existing = []
         rows_by_key = {}
+        scope_dropped_count = 0
 
         def _scan_existing(_set_msg):
+            nonlocal scope_dropped_count
             _set_msg("Reading existing report...")
             _rows = normalize_existing_rows(read_existing_rows(str(output_path)))
             if not _rows:
                 raise SystemExit("Existing report is empty — run 'new' first.")
+
+            # Drop rows whose epic no longer matches the CURRENT
+            # include/exclude scope — a keyword removed from includes, or a
+            # newly-added exclude, should make its rows disappear here
+            # rather than being silently left stranded from a scope edit
+            # that no longer applies to them. Rows only store the epic key
+            # (see build_xlsx's "tasks" sheet columns), not its summary text,
+            # so the epics need re-fetching to check with the real
+            # epic_matches_keyword() rather than guessing from stored data.
+            _epic_keys = {str(_r.get("Epic") or "").strip() for _r in _rows if str(_r.get("Epic") or "").strip()}
+            if _epic_keys:
+                _set_msg("Checking existing epics against current keywords...")
+                _epic_fields = ",".join(["summary", "status", "issuetype", "project"] + epic_name_field_ids)
+                _epics_by_key = fetch_epics_by_key(_epic_keys, _epic_fields)
+
+                def _row_in_scope(_row):
+                    _ek = str(_row.get("Epic") or "").strip()
+                    if not _ek:
+                        return True
+                    _epic = _epics_by_key.get(_ek)
+                    if _epic is None:
+                        return True  # epic vanished/inaccessible — keep rather than risk losing data we can't verify
+                    return (
+                        epic_matches_any_keyword(_epic, include_values, epic_name_field_ids)
+                        and not epic_matches_any_keyword(_epic, exclude, epic_name_field_ids)
+                    )
+
+                _before_count = len(_rows)
+                _rows = [_r for _r in _rows if _row_in_scope(_r)]
+                scope_dropped_count = _before_count - len(_rows)
+                if not _rows:
+                    raise SystemExit(
+                        "Nothing in the existing report matches the current include/exclude "
+                        "keywords anymore. Double-check your keywords, or run 'new' to start fresh."
+                    )
             update_existing.extend(_rows)
 
             for _row in _rows:
@@ -2780,9 +2834,11 @@ def main():
         run_progress_spinner("Reading existing report...", _scan_existing)
 
         _has_new_features = bool([k.strip() for k in (args.new_features or "").split(",") if k.strip()])
-        if not keys_to_refresh and not _has_new_features:
+        if not keys_to_refresh and not _has_new_features and not scope_dropped_count:
             say_done("All quiet — nothing changed. Check back later.")
             raise SystemExit(88)
+        if scope_dropped_count:
+            say_done(f"Removed {scope_dropped_count} task(s) no longer matching the current keywords.")
         if keys_to_refresh:
             say_done(f"Found {len(keys_to_refresh)} task(s) to check for status changes.")
             if args.from_cache:
@@ -2836,7 +2892,7 @@ def main():
                 fresh_rows_by_key[_key] = _new_rows
 
             _new_feature_kwds_check = [k.strip() for k in (args.new_features or "").split(",") if k.strip()]
-            if not _changed and not _new_feature_kwds_check:
+            if not _changed and not _new_feature_kwds_check and not scope_dropped_count:
                 say_done("0 tasks updated their status")
                 say_done("All quiet on the Jira front. Come back when someone actually does something.")
                 raise SystemExit(88)
