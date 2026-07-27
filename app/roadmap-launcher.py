@@ -1311,6 +1311,16 @@ def main():
             print_line("Rebuilding new report using local settings...")
             stage = 999
         elif action == "edit":
+            # Route edits through --update (task-level incremental refresh)
+            # rather than falling through with neither --fresh nor --update
+            # set. That middle-ground path queries Jira for tasks with
+            # status NOT IN (done, rejected) — correct for --update, where
+            # done tasks are already trusted to be in the existing file —
+            # but with nothing else marking the feature as already fully
+            # done, that exclusion silently drops real completed work with
+            # no fallback to preserve it, e.g. any epic whose tasks are ALL
+            # currently Done shows 0 child tasks and vanishes from the report.
+            edit_run = True
             edit_section = _prompt_edit_section()
             if edit_section != "all":
                 _run_targeted_edit(

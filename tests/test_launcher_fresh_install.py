@@ -114,4 +114,70 @@ def test_fresh_install_writes_settings_without_any_hardcoded_company_default(san
     dump = json.dumps(written).lower()
     assert "example" not in dump
     assert "abc" not in dump
-    assert "ca switch" not in dump
+    assert "legacy cleanup" not in dump
+
+
+@pytest.fixture
+def sandboxed_launcher_with_existing_settings(tmp_path, monkeypatch):
+    settings_dir = tmp_path / "settings"
+    settings_dir.mkdir()
+    reports_dir = tmp_path / "report"
+    template = settings_dir / "roadmap-settings.json"
+    real_template = APP_DIR.parent / "settings" / "roadmap-settings.json"
+    template.write_text(real_template.read_text())
+
+    local = settings_dir / "roadmap-settings.local.json"
+    local.write_text(json.dumps({
+        "features": [{"keyword": "checkout redesign", "expected_pace": 15.0}],
+        "exclude": ["legacy cleanup"],
+        "project_keys": [],
+        "output": "report/roadmap 2026.xlsx",
+        "drive_folder": "",
+        "google_client_secrets": None,
+        "local_only": True,
+        "update_time": "11:00",
+        "update_timezone": "Europe/Kiev",
+    }))
+
+    monkeypatch.setattr(launcher, "SETTINGS_DIR", settings_dir)
+    monkeypatch.setattr(launcher, "SETTINGS_TEMPLATE", template)
+    monkeypatch.setattr(launcher, "STATE_PATH", local)
+    monkeypatch.setattr(launcher, "REPORTS_DIR", reports_dir)
+    monkeypatch.setattr(launcher, "_ATLASSIAN_DC_MCP_CONFIG", tmp_path / "does-not-exist" / "jira.env")
+    monkeypatch.delenv("JIRA_HOST", raising=False)
+    monkeypatch.setattr(launcher, "ensure_jira_token", lambda: "fake-token")
+
+    captured_cmds = []
+    monkeypatch.setattr(
+        launcher, "_run_streaming_and_capture",
+        lambda cmd, cwd, env, **kw: (captured_cmds.append(cmd) or 88, "")
+    )
+
+    return launcher, settings_dir, captured_cmds
+
+
+def test_editing_keywords_routes_through_update_not_a_bare_rebuild(sandboxed_launcher_with_existing_settings, monkeypatch):
+    # Regression: edit_run was initialized False and never set True anywhere
+    # (dead code) — "edit" fell through with neither --fresh nor --update
+    # set. jira-report.py's non-fresh task query excludes status NOT IN
+    # (done, rejected) with no fallback to preserve existing Done rows for a
+    # feature that isn't already fully done, so any epic whose tasks were
+    # ALL Done silently returned zero child tasks and vanished from the
+    # report. Routing through --update (task-level refresh against the
+    # existing file) is what actually preserves that completed work.
+    launcher, settings_dir, captured_cmds = sandboxed_launcher_with_existing_settings
+    answers = ScriptedInput([
+        "edit",     # menu: has_settings -> prompt_existing_report_action
+        "keyword",  # _prompt_edit_section
+        "",         # keywords to include — keep default ("checkout redesign")
+        "",         # keywords to exclude — keep default ("legacy cleanup")
+        "",         # Jira project keys — keep default (empty)
+    ])
+    monkeypatch.setattr(builtins, "input", answers)
+    monkeypatch.setattr(sys, "argv", ["roadmap-launcher.py"])
+
+    launcher.main()
+
+    assert len(captured_cmds) == 1
+    assert "--update" in captured_cmds[0]
+    assert "--fresh" not in captured_cmds[0]
