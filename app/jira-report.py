@@ -522,7 +522,8 @@ def jget(url, context=None):
         context_text = f" while {context}" if context else ""
         raise JiraNetworkError(
             f"Jira or VPN connection appears to have dropped{context_text}. "
-            f"Last error: {reason_text}. Connect to VPN and try again."
+            f"Last error: {reason_text}. Connect to VPN and check that https://{DEFAULT_HOST} "
+            "opens in your browser, then try again."
         ) from last_error
     raise last_error
 

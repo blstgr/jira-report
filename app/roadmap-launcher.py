@@ -757,7 +757,10 @@ def run_jira_setup():
     status = run_spinner("Setting things up — Jira and your token are getting acquainted...", _finish_setup)
 
     if status == "unreachable":
-        raise SystemExit("\nCan't reach Jira — you need to connect to VPN first, then run this tool again.")
+        raise SystemExit(
+            f"\nCan't reach Jira — connect to VPN and check that https://{host} opens in your "
+            "browser, then run this tool again."
+        )
     if status == "invalid_token":
         raise SystemExit("\nThat token doesn't look valid. Double-check it and run this tool again.")
     if status != "ok":
@@ -1630,7 +1633,10 @@ def main():
             else:
                 _send_notification("All quiet on the Jira front. Come back when someone actually does something.")
     if result.returncode == 87:
-        print_line("Can't reach Jira — connect to VPN and try again.")
+        print_line(
+            f"Can't reach Jira — connect to VPN and check that https://{env.get('JIRA_HOST', '')} "
+            "opens in your browser, then try again."
+        )
         raise SystemExit(result.returncode)
     if result.returncode == 86:
         print_line("Jira sign-in looks stale. Let’s refresh setup once.")
@@ -1644,7 +1650,10 @@ def main():
         except KeyboardInterrupt:
             raise SystemExit(0)
     if result.returncode == 87:
-        print_line("Can't reach Jira — connect to VPN and try again.")
+        print_line(
+            f"Can't reach Jira — connect to VPN and check that https://{env.get('JIRA_HOST', '')} "
+            "opens in your browser, then try again."
+        )
         raise SystemExit(result.returncode)
     if result.returncode == 88:
         _do_drive_upload(output, local_only, drive_folder, google_client_secrets)
