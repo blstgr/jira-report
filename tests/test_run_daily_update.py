@@ -209,3 +209,60 @@ def test_restore_jira_host_from_external_config_no_op_when_file_missing(tmp_path
     monkeypatch.setattr(rdu, "_ATLASSIAN_DC_MCP_CONFIG", tmp_path / "does-not-exist" / "jira.env")
     rdu._restore_jira_host_from_external_config()
     assert "JIRA_HOST" not in rdu.os.environ
+
+
+def test_run_update_surfaces_empty_report_as_an_actionable_message(tmp_path, monkeypatch):
+    # Regression: jira-report.py's own "Existing report is empty — run 'new'
+    # first." already says exactly what's wrong and what to do — the
+    # generic "Update finished with errors — check the log." fallback threw
+    # that away, leaving the user digging through a /tmp log file to find
+    # out their report needed regenerating.
+    monkeypatch.setattr(rdu, "STAMP", tmp_path / ".last-daily-run-utc")
+    result = MagicMock(
+        returncode=1,
+        stdout="Existing report is empty — run 'new' first.\n",
+        stderr="",
+    )
+    with patch.object(rdu.subprocess, "run", return_value=result):
+        message, vpn_error, output_path = rdu._run_update(["cmd"])
+    assert vpn_error is False
+    assert "run 'new'" not in message  # rephrased for the user, not just echoed
+    assert "new" in message.lower()
+
+
+def test_run_update_surfaces_no_report_found_as_an_actionable_message(tmp_path, monkeypatch):
+    monkeypatch.setattr(rdu, "STAMP", tmp_path / ".last-daily-run-utc")
+    result = MagicMock(
+        returncode=1,
+        stdout="No existing report found — run 'new' first.\n",
+        stderr="",
+    )
+    with patch.object(rdu.subprocess, "run", return_value=result):
+        message, vpn_error, output_path = rdu._run_update(["cmd"])
+    assert "regenerate" in message.lower()
+
+
+def test_run_update_surfaces_scope_exhausted_as_an_actionable_message(tmp_path, monkeypatch):
+    monkeypatch.setattr(rdu, "STAMP", tmp_path / ".last-daily-run-utc")
+    result = MagicMock(
+        returncode=1,
+        stdout=(
+            "Nothing in the existing report matches the current include/exclude "
+            "keywords anymore. Double-check your keywords, or run 'new' to start fresh.\n"
+        ),
+        stderr="",
+    )
+    with patch.object(rdu.subprocess, "run", return_value=result):
+        message, vpn_error, output_path = rdu._run_update(["cmd"])
+    assert "regenerate" in message.lower()
+
+
+def test_run_update_generic_error_still_falls_back_to_check_the_log(tmp_path, monkeypatch):
+    # Confirms the fix is scoped to the known "run 'new'"/"start fresh"
+    # cases specifically — a genuinely unexpected crash should still point
+    # at the log rather than guessing at a specific cause.
+    monkeypatch.setattr(rdu, "STAMP", tmp_path / ".last-daily-run-utc")
+    result = MagicMock(returncode=1, stdout="Traceback (most recent call last):\nboom\n", stderr="")
+    with patch.object(rdu.subprocess, "run", return_value=result):
+        message, vpn_error, output_path = rdu._run_update(["cmd"])
+    assert message == "Update finished with errors — check the log."

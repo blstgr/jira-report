@@ -278,6 +278,17 @@ def _run_update(cmd: list) -> tuple:
     if "All quiet" in output or result.returncode == 88 or (m and int(m.group(1)) == 0):
         return "All quiet on the Jira front. Come back when someone actually does something.", False, output_path
     if result.returncode != 0:
+        # jira-report.py's own "run 'new'"/"start fresh" messages (empty
+        # report, no report found, or nothing left after an edited
+        # include/exclude scope) already say exactly what's wrong and what
+        # to do — surfacing the generic "check the log" instead threw that
+        # away and left the user digging through a /tmp log file for it.
+        if "run 'new'" in output.lower() or "start fresh" in output.lower():
+            return (
+                "Your report file looks empty or out of sync — launch Roadmap "
+                "and choose 'new' to regenerate it.",
+                False, output_path,
+            )
         return "Update finished with errors — check the log.", False, output_path
     return "Report updated.", False, output_path
 
