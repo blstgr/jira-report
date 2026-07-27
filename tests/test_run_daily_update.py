@@ -49,7 +49,7 @@ def fake_drive_module(monkeypatch):
 
 def test_syncs_when_fully_configured(state_file, fake_drive_module):
     rdu.STATE = state_file()
-    rdu._sync_to_drive("report/roadmap 2026.xlsx")
+    assert rdu._sync_to_drive("report/roadmap 2026.xlsx") is True
     fake_drive_module.assert_called_once_with(
         "report/roadmap 2026.xlsx",
         "https://drive.google.com/drive/folders/abc",
@@ -60,26 +60,26 @@ def test_syncs_when_fully_configured(state_file, fake_drive_module):
 
 def test_skips_when_local_only(state_file, fake_drive_module):
     rdu.STATE = state_file(local_only=True)
-    rdu._sync_to_drive("report/roadmap 2026.xlsx")
+    assert rdu._sync_to_drive("report/roadmap 2026.xlsx") is None
     fake_drive_module.assert_not_called()
 
 
 def test_skips_when_no_drive_folder(state_file, fake_drive_module):
     rdu.STATE = state_file(drive_folder="")
-    rdu._sync_to_drive("report/roadmap 2026.xlsx")
+    assert rdu._sync_to_drive("report/roadmap 2026.xlsx") is None
     fake_drive_module.assert_not_called()
 
 
 def test_skips_when_no_client_secrets_configured(state_file, fake_drive_module):
     rdu.STATE = state_file(google_client_secrets="")
-    rdu._sync_to_drive("report/roadmap 2026.xlsx")
+    assert rdu._sync_to_drive("report/roadmap 2026.xlsx") is None
     fake_drive_module.assert_not_called()
 
 
 def test_upload_failure_does_not_raise(state_file, fake_drive_module):
     fake_drive_module.side_effect = RuntimeError("network down")
     rdu.STATE = state_file()
-    rdu._sync_to_drive("report/roadmap 2026.xlsx")  # must not raise
+    assert rdu._sync_to_drive("report/roadmap 2026.xlsx") is False  # must not raise
 
 
 def test_ensure_openpyxl_already_importable_does_not_attempt_install():
@@ -137,6 +137,55 @@ def test_ensure_openpyxl_non_pep668_failure_does_not_retry():
          patch.object(rdu.subprocess, "run", return_value=fail) as fake_run:
         assert rdu._ensure_openpyxl() is False
     assert fake_run.call_count == 1
+
+
+def test_main_appends_drive_sync_failure_note_to_notification(tmp_path, monkeypatch):
+    # Regression: _sync_to_drive()'s failures only ever got logged to
+    # /tmp/jira-report-launchd.log — a file nobody watches. The report
+    # itself updates fine, but Drive silently goes stale with zero visible
+    # signal unless the user happens to check the log by hand.
+    state_path = tmp_path / "roadmap-settings.local.json"
+    state_path.write_text(json.dumps({"update_time": "08:00", "update_timezone": "UTC"}))
+    monkeypatch.setattr(rdu, "STATE", state_path)
+    stamp_path = tmp_path / ".last-daily-run-utc"
+    monkeypatch.setattr(rdu, "STAMP", stamp_path)
+    monkeypatch.setattr(rdu, "_restore_jira_host_from_settings", lambda: None)
+    monkeypatch.setattr(rdu, "_restore_jira_host_from_external_config", lambda: None)
+    monkeypatch.setattr(rdu, "_ensure_openpyxl", lambda: True)
+    monkeypatch.setattr(rdu, "_run_update", lambda cmd: ("Report updated.", False, "report/roadmap 2026.xlsx"))
+    monkeypatch.setattr(rdu, "_sync_to_drive", lambda output_path: False)
+    monkeypatch.setattr(rdu, "_drive_url", lambda: "")
+    monkeypatch.setattr(sys, "argv", ["run-daily-update.py"])
+    notified = []
+    monkeypatch.setattr(rdu, "_notify", lambda message, open_url="": notified.append(message))
+
+    rdu.main()
+
+    assert "Drive sync failed" in notified[-1]
+
+
+def test_main_does_not_append_drive_note_when_sync_skipped_intentionally(tmp_path, monkeypatch):
+    # _sync_to_drive() returns None (not False) when Drive isn't configured
+    # or local_only is set — that's an intentional skip, not a failure, and
+    # must not get flagged as one.
+    state_path = tmp_path / "roadmap-settings.local.json"
+    state_path.write_text(json.dumps({"update_time": "08:00", "update_timezone": "UTC"}))
+    monkeypatch.setattr(rdu, "STATE", state_path)
+    stamp_path = tmp_path / ".last-daily-run-utc"
+    monkeypatch.setattr(rdu, "STAMP", stamp_path)
+    monkeypatch.setattr(rdu, "_restore_jira_host_from_settings", lambda: None)
+    monkeypatch.setattr(rdu, "_restore_jira_host_from_external_config", lambda: None)
+    monkeypatch.setattr(rdu, "_ensure_openpyxl", lambda: True)
+    monkeypatch.setattr(rdu, "_run_update", lambda cmd: ("Report updated.", False, "report/roadmap 2026.xlsx"))
+    monkeypatch.setattr(rdu, "_sync_to_drive", lambda output_path: None)
+    monkeypatch.setattr(rdu, "_drive_url", lambda: "")
+    monkeypatch.setattr(sys, "argv", ["run-daily-update.py"])
+    notified = []
+    monkeypatch.setattr(rdu, "_notify", lambda message, open_url="": notified.append(message))
+
+    rdu.main()
+
+    assert "Drive sync failed" not in notified[-1]
 
 
 def test_main_notifies_when_openpyxl_cannot_be_installed(tmp_path, monkeypatch):

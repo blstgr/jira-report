@@ -183,29 +183,39 @@ def main():
             _notify("Connected to VPN but can't reach Jira — try running manually.")
             return
 
+    drive_sync_failed = False
     if output_path:
-        _sync_to_drive(output_path)
+        drive_sync_failed = _sync_to_drive(output_path) is False
 
     drive_url = _drive_url()
+    if drive_sync_failed:
+        # _sync_to_drive() only ever logged this to a /tmp file nobody
+        # watches — the report itself updated fine, but the user would have
+        # no idea Drive was left stale until they noticed by hand.
+        message = f"{message} (Drive sync failed — check the log.)"
     _notify(message, open_url=drive_url)
 
 
-def _sync_to_drive(output_path: str) -> None:
+def _sync_to_drive(output_path: str):
+    """Returns True on success, False on failure, None if intentionally
+    skipped (local_only, or Drive not configured)."""
     try:
         settings = json.loads(STATE.read_text())
     except Exception:
-        return
+        return None
     drive_folder = settings.get("drive_folder")
     google_client_secrets = settings.get("google_client_secrets")
     if settings.get("local_only") or not drive_folder or not google_client_secrets:
-        return
+        return None
     sys.path.insert(0, str(ROOT))
     try:
         from google_drive_sync import upload_or_update
         upload_or_update(output_path, drive_folder, Path(output_path).name, google_client_secrets)
         print(f"[drive] synced {output_path} to {drive_folder}", flush=True)
+        return True
     except Exception as exc:
         print(f"[drive] upload failed: {exc}", flush=True)
+        return False
 
 
 def _drive_url() -> str:

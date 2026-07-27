@@ -1,16 +1,18 @@
 {
   "steps": [
-    "Do this once:",
+    "Do this once (Google's setup screens changed in 2026 — this matches the current flow):",
     "1. Open https://console.cloud.google.com/",
     "2. At the top of the page, click 'Select a project'.",
     "3. Create a new project.",
     "4. In the search bar, find 'Google Drive API' and click 'Enable'.",
-    "5. On the Google Drive API page, click 'Create credentials'.",
-    "6. Choose 'User data' and click 'Next'.",
-    "7. Skip scopes for now.",
-    "8. Create an OAuth Client ID and choose 'Desktop app'.",
-    "9. Download the JSON file and click 'Done'.",
-    "10. Go to OAuth consent screen > Audience > Test users, add your Google account, and save the changes.",
-    "11. Open the downloaded JSON file in TextEdit or Notepad and paste its full contents here."
+    "5. Go to APIs & Services > Google Auth Platform, and click 'Get Started'.",
+    "6. Enter an app name and your email as the support email, then continue.",
+    "7. Under Audience, choose 'External', then continue.",
+    "8. Enter your email again as the contact email, check the agreement box, and continue/create.",
+    "9. Go to the 'Data Access' tab, click 'Add or Remove Scopes', find and add the '.../auth/drive.file' scope, then save.",
+    "10. Go to the 'Audience' tab, add yourself under 'Test users', and save.",
+    "11. Go to the 'Clients' tab, click 'Create Client', choose 'Desktop app', name it, and create.",
+    "12. Download the JSON shown after creation (the client secret is only shown once).",
+    "13. Open the downloaded JSON file in TextEdit or Notepad and paste its full contents here."
   ]
 }
