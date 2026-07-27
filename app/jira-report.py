@@ -2922,6 +2922,11 @@ def main():
             if epic_link_field_id:
                 _task_fields.append(epic_link_field_id)
             _existing_keys = {str(_r.get("Link") or "").strip() for _r in update_existing}
+            _existing_feature_by_key = {}
+            for _r in update_existing:
+                _rk = str(_r.get("Link") or "").strip()
+                if _rk:
+                    _existing_feature_by_key[_rk] = str(_r.get("Feature") or "")
             for _nkwd in _new_feature_kwds:
                 say_done(f"Fetching new feature: {_nkwd}")
                 _nkwd_q = jql_quote(_nkwd.strip())
@@ -2964,13 +2969,25 @@ def main():
                     _nf_epic_name = get_epic_name(_nf_epic["fields"], epic_name_field_ids)
                     for _ci in _nf_entry["child_issues"]:
                         _ci_key = str(_ci.get("key") or "").strip()
-                        if _ci_key in _existing_keys:
-                            continue  # task already in report, skip duplicate
+                        _existing_feature = _existing_feature_by_key.get(_ci_key)
+                        if _existing_feature == _nf_label:
+                            continue  # already correctly present, skip duplicate
+                        if _existing_feature is not None:
+                            # Present under a DIFFERENT (now-stale) feature —
+                            # e.g. an epic that used to only match a generic
+                            # catch-all keyword got renamed/re-scoped to
+                            # match this more specific one. Strip the old
+                            # rows so the task doesn't end up duplicated
+                            # under two features at once.
+                            update_existing[:] = [
+                                _r for _r in update_existing if str(_r.get("Link") or "").strip() != _ci_key
+                            ]
                         _nf_rows = issue_rows(_ci, _nf_label, _nf_epic_summary, _nf_epic_name, eta_field_ids, _nf_epic["key"])
                         _nf_rows = [_r for _r in _nf_rows if row_belongs_in_current_report_year(_r, TODAY.year)]
                         update_existing.extend(_nf_rows)
                         if _ci_key:
                             _existing_keys.add(_ci_key)
+                            _existing_feature_by_key[_ci_key] = _nf_label
 
         # Sort + annotate + write
         def _write_report(_set_msg):
