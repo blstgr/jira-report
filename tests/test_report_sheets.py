@@ -38,7 +38,15 @@ spec = importlib.util.spec_from_file_location("jr_sheets", APP_DIR / "jira-repor
 jr = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(jr)
 
-sys.modules.update(_saved_stubs)
+# Deliberately NOT restoring _saved_stubs into sys.modules here: openpyxl's
+# own internals do lazy `from openpyxl.x import y` imports inside methods
+# like Workbook.save() — those resolve against whatever sys.modules holds
+# at CALL time, not at jira-report.py's import time. Putting the stub back
+# would make any later test in this file that actually writes a file (via
+# build_xlsx) crash inside openpyxl's own save() with an unrelated-looking
+# import error. No other test file depends on sys.modules["openpyxl"]
+# being a stub — they all mock at the function level (e.g.
+# patch.object(rdu, "_openpyxl_importable", ...)) instead.
 
 REPORT_DATE = dt.date(2026, 7, 21)
 
@@ -312,6 +320,18 @@ def test_weekly_freezes_header_row():
     wb, _, weekly = _new_sheets()
     jr.build_weekly_sheet(weekly, rows, REPORT_DATE, {}, feature_names=["F1"])
     assert weekly.freeze_panes == "A6"
+
+
+# ── Tasks: header row AND column A are both frozen so they stay visible on
+# both horizontal and vertical scroll (in Excel and, on upload, Google Sheets
+# reading the same OOXML freeze-pane metadata) ──────────────────────────────
+
+def test_tasks_freezes_header_row_and_column_a(tmp_path):
+    rows = [_row("F1", "A-1", "done", start=dt.date(2026, 1, 5), end=dt.date(2026, 1, 9))]
+    out_path = tmp_path / "report.xlsx"
+    jr.build_xlsx(rows, str(out_path), report_date=REPORT_DATE)
+    wb = openpyxl.load_workbook(str(out_path))
+    assert wb["tasks"].freeze_panes == "B2"
 
 
 # ── norm_status: done-status set is configurable, not hardcoded ────────────

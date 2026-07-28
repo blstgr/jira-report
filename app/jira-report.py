@@ -1302,7 +1302,7 @@ def build_xlsx(rows, out_path, expected_tasks_per_week=None, feature_eta_dates=N
     summary_sheet.title = "summary"
     weekly_sheet = workbook.create_sheet("weekly")
     sheet = workbook.create_sheet("tasks")
-    sheet.freeze_panes = "A2"
+    sheet.freeze_panes = "B2"  # freeze header row 1 AND column A (Feature)
 
     base_font = Font(name="Arial", size=10)
     header_font = Font(name="Arial", size=10, bold=True)
