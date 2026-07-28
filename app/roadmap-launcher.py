@@ -1151,7 +1151,7 @@ def _run_targeted_edit(
         while True:
             default_au = "y" if auto_update else "n"
             print(f"Automatic updates? (y/n) [{default_au}]:")
-            raw_au = input("→ New value / /b to go back / Enter to skip: ").strip().lower()
+            raw_au = input("→ New value / Enter to skip: ").strip().lower()
             if raw_au in BACK_COMMANDS:
                 break
             if raw_au in {"y", "yes"}:
@@ -1165,7 +1165,7 @@ def _run_targeted_edit(
                 break
 
             print(f"Automatic daily update time (HH:MM in 24h){f' [{update_time}]' if update_time else ''}:")
-            raw_time = input("→ New time / /b to go back / Enter to skip: ").strip()
+            raw_time = input("→ New time / Enter to skip: ").strip()
             if raw_time in BACK_COMMANDS:
                 continue
             if raw_time:
