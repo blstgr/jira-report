@@ -315,3 +315,29 @@ def test_run_update_generic_error_still_falls_back_to_check_the_log(tmp_path, mo
     with patch.object(rdu.subprocess, "run", return_value=result):
         message, vpn_error, output_path = rdu._run_update(["cmd"])
     assert message == "Update finished with errors — check the log."
+
+
+def test_vpn_connected_checks_real_jira_reachability_not_interfaces(monkeypatch):
+    # Regression: the old implementation sniffed `ifconfig` for any utun/ppp
+    # interface with an inet address — but those exist for reasons that have
+    # nothing to do with the corporate VPN (Personal Hotspot's utun has a
+    # 172.20.10.0/28 address, iCloud Private Relay, other network
+    # extensions), so it reported "VPN connected" long before the real VPN
+    # was actually up. This checks real reachability to JIRA_HOST instead.
+    monkeypatch.setenv("JIRA_HOST", "track.example.com")
+    with patch.object(rdu.socket, "create_connection") as fake_connect:
+        fake_connect.return_value.__enter__ = lambda self: self
+        fake_connect.return_value.__exit__ = lambda self, *a: None
+        assert rdu._vpn_connected() is True
+    fake_connect.assert_called_once_with(("track.example.com", 443), timeout=3)
+
+
+def test_vpn_connected_false_when_host_unreachable(monkeypatch):
+    monkeypatch.setenv("JIRA_HOST", "track.example.com")
+    with patch.object(rdu.socket, "create_connection", side_effect=OSError("timed out")):
+        assert rdu._vpn_connected() is False
+
+
+def test_vpn_connected_false_when_no_jira_host_configured(monkeypatch):
+    monkeypatch.delenv("JIRA_HOST", raising=False)
+    assert rdu._vpn_connected() is False

@@ -3,6 +3,7 @@ import datetime as dt
 import json
 import os
 import re
+import socket
 import subprocess
 import time
 import sys
@@ -255,17 +256,22 @@ def _notify(message: str, open_url: str = "") -> None:
 
 
 def _vpn_connected() -> bool:
-    """Check local interfaces for an active VPN tunnel — no outbound traffic."""
-    try:
-        r = subprocess.run(["ifconfig"], capture_output=True, text=True)
-        # utunN interfaces appear when a VPN tunnel is active on macOS
-        import re as _re
-        for block in _re.split(r'\n(?=\S)', r.stdout):
-            if not _re.match(r'(utun|ppp)\d+:', block):
-                continue
-            if "inet " in block:
-                return True
+    """Check actual reachability to the configured Jira host, rather than
+    inferring VPN status from network interfaces. utun/ppp interfaces can
+    exist for reasons that have nothing to do with the corporate VPN —
+    Personal Hotspot, iCloud Private Relay, other network extensions — and
+    on one real machine a Personal Hotspot utun interface (recognizable by
+    its 172.20.10.0/28 address) had an inet address the whole time, so the
+    old interface-sniffing check reported "VPN connected" long before the
+    real VPN was actually up. That made the retry loop below fire
+    immediately, fail against the real Jira host, and give up within about
+    a minute — well before the user actually finished connecting."""
+    host = os.environ.get("JIRA_HOST", "").strip()
+    if not host:
         return False
+    try:
+        with socket.create_connection((host, 443), timeout=3):
+            return True
     except Exception:
         return False
 
