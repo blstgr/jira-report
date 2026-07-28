@@ -1269,6 +1269,29 @@ def issue_rows(issue, feature, epic_summary, epic_name, eta_field_ids, epic_key=
     return result
 
 
+def epic_fallback_rows(epic, feature_label, epic_summary, epic_name, eta_field_ids):
+    """When an epic has no child tasks to break progress into, track the
+    epic itself instead of letting it silently vanish from the report —
+    fetch its own changelog and run it through issue_rows() exactly the way
+    a task would be, so its own status transitions become Start/End dates
+    and its own summary becomes the Task title. Epic discovery searches
+    don't request changelog (most epics have real children and don't need
+    it), so this is a small extra fetch done only for the few epics that
+    turn out to be empty."""
+    epic_key = epic.get("key")
+    if not epic_key:
+        return []
+    fields = "summary,status,issuetype,created,resolutiondate," + ",".join(eta_field_ids)
+    try:
+        full_epic = jget(
+            f"{BASE}/issue/{epic_key}?fields={fields}&expand=changelog",
+            context=f"fetching epic {epic_key} for empty-epic tracking",
+        )
+    except Exception:
+        return []
+    return issue_rows(full_epic, feature_label, epic_summary, epic_name, eta_field_ids, epic_key=epic_key)
+
+
 def build_xlsx(rows, out_path, expected_tasks_per_week=None, feature_eta_dates=None, report_date=None):
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     expected_tasks_per_week = expected_tasks_per_week or {}
@@ -2687,24 +2710,29 @@ def main():
             raise
         except Exception:
             _detected_fields = []
-        # epic_link_field_id determines whether a child task gets associated
-        # with its epic AT ALL — a stale cached value here silently breaks
-        # that association with zero visible error (the epic+task JQL
-        # fetches still succeed, they just can't be attributed to any epic,
-        # so every epic ends up with 0 matched children). That's severe
-        # enough to always re-detect live rather than trust a cache, unlike
-        # epic_name_field_ids/eta_field_ids below, which only affect label/
-        # ETA preference — a stale value there is a minor inconvenience,
-        # not silent data loss. This is why --update's "found 3 epics" could
-        # print correctly while a genuinely new or renamed epic's tasks
-        # never showed up: the epics matched, their tasks just never made
-        # it past the (wrong) Epic Link field lookup.
+        # epic_link_field_id and epic_name_field_ids both feed correctness-
+        # critical decisions, not just cosmetic ones — a stale cached value
+        # silently breaks things with zero visible error:
+        #   - epic_link_field_id determines whether a child task gets
+        #     associated with its epic AT ALL (wrong value -> every epic
+        #     ends up with 0 matched children, even though the epic+task
+        #     JQL fetches themselves succeed and print a correct-looking
+        #     "Found N epics").
+        #   - epic_name_field_ids feeds epic_matches_keyword()'s Epic Name
+        #     check and pick_feature_label()'s ranking — a stale/incomplete
+        #     list (e.g. missing the real Epic Name field) makes epics
+        #     whose SUMMARY doesn't happen to contain the keyword silently
+        #     invisible to keyword matching, even though their Epic Name
+        #     field does contain it.
+        # Both are always re-detected live rather than cached in --update
+        # mode. eta_field_ids is genuinely lower-stakes (which custom field
+        # to read for display, not whether anything gets matched/associated
+        # at all) and stays cached for --update.
         epic_link_field_id = detect_epic_link_field_id(_detected_fields)
+        epic_name_field_ids = detect_epic_name_field_ids(_detected_fields)
         if args.update:
-            epic_name_field_ids = cached_field_ids(state, "epic_name_field_ids", ["customfield_10011"])
             eta_field_ids = cached_field_ids(state, "eta_field_ids", DEFAULT_ETA_FIELD_IDS)
         else:
-            epic_name_field_ids = detect_epic_name_field_ids(_detected_fields)
             eta_field_ids = detect_eta_field_ids(_detected_fields)
     # Rebuild `features` list from canonical keyword order + any eta/pace data,
     # so the saved file stays in the tidy one-keyword-per-entry format.
@@ -2984,32 +3012,42 @@ def main():
                         _lek = (_lev.get("key") or _lev.get("id") or "" if isinstance(_lev, dict) else str(_lev or "")).strip()
                         if _lek in _nf_epic_by_key:
                             _nf_epic_by_key[_lek]["child_issues"].append(_ci)
+                def _relabel_or_add(_row_key, _rows_for_key, _label):
+                    _existing_feature = _existing_feature_by_key.get(_row_key)
+                    if _existing_feature == _label:
+                        return  # already correctly present, skip duplicate
+                    if _existing_feature is not None:
+                        # Present under a DIFFERENT (now-stale) feature —
+                        # e.g. an epic that used to only match a generic
+                        # catch-all keyword got renamed/re-scoped to match
+                        # this more specific one. Strip the old rows so it
+                        # doesn't end up duplicated under two features.
+                        update_existing[:] = [
+                            _r for _r in update_existing if str(_r.get("Link") or "").strip() != _row_key
+                        ]
+                    update_existing.extend(_rows_for_key)
+                    if _row_key:
+                        _existing_keys.add(_row_key)
+                        _existing_feature_by_key[_row_key] = _label
+
                 for _nf_entry in _nf_epic_by_key.values():
                     _nf_epic = _nf_entry["epic"]
                     _nf_label = _nf_entry["feature_label"]
                     _nf_epic_summary = _nf_epic["fields"].get("summary", "")
                     _nf_epic_name = get_epic_name(_nf_epic["fields"], epic_name_field_ids)
+                    if not _nf_entry["child_issues"]:
+                        # No tasks to break progress into — track the epic
+                        # itself instead of it silently vanishing.
+                        _fallback_rows = epic_fallback_rows(_nf_epic, _nf_label, _nf_epic_summary, _nf_epic_name, eta_field_ids)
+                        _fallback_rows = [_r for _r in _fallback_rows if row_belongs_in_current_report_year(_r, TODAY.year)]
+                        if _fallback_rows:
+                            _relabel_or_add(_nf_epic["key"], _fallback_rows, _nf_label)
+                        continue
                     for _ci in _nf_entry["child_issues"]:
                         _ci_key = str(_ci.get("key") or "").strip()
-                        _existing_feature = _existing_feature_by_key.get(_ci_key)
-                        if _existing_feature == _nf_label:
-                            continue  # already correctly present, skip duplicate
-                        if _existing_feature is not None:
-                            # Present under a DIFFERENT (now-stale) feature —
-                            # e.g. an epic that used to only match a generic
-                            # catch-all keyword got renamed/re-scoped to
-                            # match this more specific one. Strip the old
-                            # rows so the task doesn't end up duplicated
-                            # under two features at once.
-                            update_existing[:] = [
-                                _r for _r in update_existing if str(_r.get("Link") or "").strip() != _ci_key
-                            ]
                         _nf_rows = issue_rows(_ci, _nf_label, _nf_epic_summary, _nf_epic_name, eta_field_ids, _nf_epic["key"])
                         _nf_rows = [_r for _r in _nf_rows if row_belongs_in_current_report_year(_r, TODAY.year)]
-                        update_existing.extend(_nf_rows)
-                        if _ci_key:
-                            _existing_keys.add(_ci_key)
-                            _existing_feature_by_key[_ci_key] = _nf_label
+                        _relabel_or_add(_ci_key, _nf_rows, _nf_label)
 
         # Sort + annotate + write
         def _write_report(_set_msg):
@@ -3216,6 +3254,8 @@ def main():
                 if not issue_task_rows:
                     continue
                 epic_rows.extend(issue_task_rows)
+            if not child_issues:
+                epic_rows = epic_fallback_rows(epic, entry["feature_label"], epic_summary, epic_name, eta_field_ids)
             feature_rows = [row for row in epic_rows if row_belongs_in_current_report_year(row, TODAY.year)]
             feature_has_current_year_activity = rows_have_feature_report_activity(feature_rows, TODAY.year)
             if feature_has_current_year_activity:

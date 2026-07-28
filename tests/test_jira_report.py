@@ -486,6 +486,58 @@ def test_fetch_epics_by_key_chunks_across_batch_size():
     assert len(calls) == 2  # more keys than EPIC_BATCH_SIZE -> 2 batches
 
 
+def test_epic_fallback_rows_tracks_epic_as_task_when_no_children():
+    # Regression: an epic with zero child tasks silently vanished from the
+    # report entirely — nothing to break progress into meant nothing got
+    # tracked at all. This is what makes the epic itself show up instead,
+    # using its own status/summary/changelog the same way a real task would.
+    original_jget = jr.jget
+    jr.jget = lambda url, context=None: {
+        "key": "ABC-1",
+        "fields": {
+            "summary": "Implement the thing",
+            "issuetype": {"name": "Epic"},
+            "status": {"name": "In Progress"},
+            "created": "2026-07-01T00:00:00.000-0000",
+            "resolutiondate": None,
+        },
+        "changelog": {"histories": []},
+    }
+    try:
+        epic = {"key": "ABC-1", "fields": {"summary": "Checkout Redesign: the epic"}}
+        rows = jr.epic_fallback_rows(epic, "Checkout Redesign", "Checkout Redesign: the epic", "", [])
+    finally:
+        jr.jget = original_jget
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["Task"] == "Implement the thing"
+    assert row["Task type"] == "Epic"
+    assert row["Status"] == "in progress"
+    assert row["Link"] == "ABC-1"
+    assert row["Epic"] == "ABC-1"
+    assert row["Feature"] == "Checkout Redesign"
+
+
+def test_epic_fallback_rows_returns_empty_on_fetch_failure():
+    original_jget = jr.jget
+
+    def _raise(*a, **kw):
+        raise jr.JiraNetworkError("dropped")
+
+    jr.jget = _raise
+    try:
+        epic = {"key": "ABC-1", "fields": {}}
+        rows = jr.epic_fallback_rows(epic, "Checkout Redesign", "summary", "", [])
+    finally:
+        jr.jget = original_jget
+    assert rows == []
+
+
+def test_epic_fallback_rows_returns_empty_without_epic_key():
+    rows = jr.epic_fallback_rows({"fields": {}}, "Checkout Redesign", "summary", "", [])
+    assert rows == []
+
+
 def test_pick_feature_label_prefers_more_specific_keyword_among_candidates():
     summary = "Checkout Redesign: post-release: Increased load - fixes"
     label = jr.pick_feature_label(
