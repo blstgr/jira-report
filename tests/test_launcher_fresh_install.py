@@ -198,6 +198,69 @@ def test_editing_keywords_routes_through_update_not_a_bare_rebuild(sandboxed_lau
     assert "--fresh" not in captured_cmds[0]
 
 
+def test_edit_resync_feature_runs_update_with_new_features_for_chosen_keyword(
+    sandboxed_launcher_with_existing_settings, monkeypatch
+):
+    # This is what exposes --update --new-features "<keyword>" (see
+    # jira-report.py's _existing_feature_by_key relabeling) from the
+    # interactive menu — previously only reachable by invoking
+    # jira-report.py directly on the command line.
+    launcher, settings_dir, captured_cmds = sandboxed_launcher_with_existing_settings
+    answers = ScriptedInput([
+        "edit",              # menu
+        "resync",            # _prompt_edit_section
+        "checkout redesign",  # keyword to resync — matches the fixture's configured feature
+    ])
+    monkeypatch.setattr(builtins, "input", answers)
+    monkeypatch.setattr(sys, "argv", ["roadmap-launcher.py"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        launcher.main()
+
+    assert exc_info.value.code == 0
+    assert len(captured_cmds) == 1
+    assert "--update" in captured_cmds[0]
+    assert "--new-features" in captured_cmds[0]
+    assert "checkout redesign" in captured_cmds[0]
+    assert "--fresh" not in captured_cmds[0]
+
+
+def test_edit_resync_feature_reprompts_on_unknown_keyword(
+    sandboxed_launcher_with_existing_settings, monkeypatch
+):
+    launcher, settings_dir, captured_cmds = sandboxed_launcher_with_existing_settings
+    answers = ScriptedInput([
+        "edit",
+        "resync",
+        "not a real keyword",
+        "checkout redesign",
+    ])
+    monkeypatch.setattr(builtins, "input", answers)
+    monkeypatch.setattr(sys, "argv", ["roadmap-launcher.py"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        launcher.main()
+
+    assert exc_info.value.code == 0
+    assert len(captured_cmds) == 1
+    assert "checkout redesign" in captured_cmds[0]
+
+
+def test_edit_resync_feature_cancel_does_not_touch_settings(
+    sandboxed_launcher_with_existing_settings, monkeypatch
+):
+    launcher, settings_dir, captured_cmds = sandboxed_launcher_with_existing_settings
+    answers = ScriptedInput(["edit", "resync", ""])  # Enter with nothing = cancel
+    monkeypatch.setattr(builtins, "input", answers)
+    monkeypatch.setattr(sys, "argv", ["roadmap-launcher.py"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        launcher.main()
+
+    assert exc_info.value.code == 0
+    assert captured_cmds == []
+
+
 def test_editing_keywords_sends_notification_through_the_mock_not_the_real_notifier(
     sandboxed_launcher_with_existing_settings, monkeypatch
 ):

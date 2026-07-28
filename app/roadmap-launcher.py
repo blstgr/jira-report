@@ -1038,9 +1038,9 @@ def _do_drive_upload(output, local_only, drive_folder, google_client_secrets):
 
 
 def _prompt_edit_section():
-    _OPTIONS = {"all", "keyword", "keywords", "jira key", "jira keys", "jira", "keyword eta", "eta", "url", "drive", "time", "timezone", "status", "statuses", "done status", "done statuses", "done"}
+    _OPTIONS = {"all", "keyword", "keywords", "jira key", "jira keys", "jira", "keyword eta", "eta", "url", "drive", "time", "timezone", "status", "statuses", "done status", "done statuses", "done", "resync", "resync feature", "resync a feature"}
     while True:
-        value = input("Edit: all / keyword / Jira key / keyword eta / URL / time / Done status: ").strip().lower()
+        value = input("Edit: all / keyword / Jira key / keyword eta / URL / time / Done status / resync a feature: ").strip().lower()
         if not value or value == "all":
             return "all"
         if value in {"keyword", "keywords"}:
@@ -1055,7 +1055,9 @@ def _prompt_edit_section():
             return "time"
         if value in {"status", "statuses", "done status", "done statuses", "done"}:
             return "status"
-        print("Enter: all, keyword, Jira key, keyword eta, URL, time, or Done status.")
+        if value in {"resync", "resync feature", "resync a feature"}:
+            return "resync"
+        print("Enter: all, keyword, Jira key, keyword eta, URL, time, Done status, or resync a feature.")
 
 
 def _run_targeted_edit(
@@ -1208,6 +1210,85 @@ def _run_targeted_edit(
     save_state(_state)
 
 
+def _resync_feature_flow(include_keywords):
+    """Move one existing keyword's epics' tasks into their own feature
+    without touching anything else in the report — e.g. an epic that used
+    to only match a generic catch-all keyword got renamed/re-scoped to
+    match a more specific one, and its tasks are stuck under the old label.
+    `--update --new-features <keyword>` already does exactly this (see
+    jira-report.py), but was only ever reachable by invoking jira-report.py
+    directly — this exposes it from the interactive menu instead."""
+    if not include_keywords:
+        raise SystemExit("No keywords configured yet — nothing to resync.")
+    print(
+        "Which feature keyword should be resynced? This moves any of its "
+        "epics' tasks in from wherever else they're currently sitting, "
+        "without touching anything else."
+    )
+    for kw in include_keywords:
+        print(f"  {kw}")
+    while True:
+        chosen = input("→ Keyword to resync (Enter to cancel): ").strip()
+        if not chosen or chosen.lower() in BACK_COMMANDS:
+            raise SystemExit(0)
+        matches = [kw for kw in include_keywords if kw.strip().lower() == chosen.lower()]
+        if matches:
+            break
+        print("Enter one of the keywords listed above exactly.")
+    resync_keyword = matches[0]
+
+    ensure_jira_token()
+    if not _ensure_openpyxl():
+        raise SystemExit(
+            f"openpyxl is required to build the report. Install it yourself with:\n"
+            f"    {sys.executable} -m pip install openpyxl\nthen run this tool again."
+        )
+
+    output = str(current_output_path())
+    cmd = [
+        sys.executable,
+        str(APP_DIR / "jira-report.py"),
+        "--state", str(STATE_PATH),
+        "--output", output,
+        "--update",
+        "--new-features", resync_keyword,
+    ]
+    env = os.environ.copy()
+    jira_token = read_jira_token()
+    if jira_token:
+        env["JIRA_TOKEN"] = jira_token
+
+    startup_message = f"Resyncing '{resync_keyword}'..."
+    try:
+        returncode, _proc_out = _run_streaming_and_capture(cmd, ROOT, env, startup_message=startup_message)
+    except KeyboardInterrupt:
+        raise SystemExit(0)
+    if returncode == 86:
+        print_line("Jira sign-in looks stale. Let’s refresh setup once.")
+        run_jira_setup()
+        jira_token = read_jira_token()
+        if jira_token:
+            env["JIRA_TOKEN"] = jira_token
+        try:
+            returncode, _proc_out = _run_streaming_and_capture(cmd, ROOT, env, startup_message=startup_message)
+        except KeyboardInterrupt:
+            raise SystemExit(0)
+    if returncode == 87:
+        print_line(
+            f"Can't reach Jira — connect to VPN and check that https://{env.get('JIRA_HOST', '')} "
+            "opens in your browser, then try again."
+        )
+        raise SystemExit(returncode)
+    if returncode not in (0, 88):  # 88 = jira-report.py's "ran fine, nothing changed"
+        if "Traceback (most recent call last):" in _proc_out:
+            log_path = _write_crash_log(_proc_out)
+            print_line(f"Resync crashed. A log was saved to:\n    {log_path}\nPlease send that file so this can be debugged.")
+        else:
+            print_line("Resync stopped. Please check the keyword and try again.")
+        raise SystemExit(returncode)
+    print_line(f"✓ '{resync_keyword}' resynced.")
+
+
 def _send_notification(message: str) -> None:
     """Send a macOS notification via terminal-notifier (no-op on other platforms).
 
@@ -1332,6 +1413,12 @@ def main():
             # currently Done shows 0 child tasks and vanishes from the report.
             edit_run = True
             edit_section = _prompt_edit_section()
+            if edit_section == "resync":
+                # Doesn't touch settings at all — nothing for
+                # _run_targeted_edit to persist — so it's handled entirely
+                # separately and exits on its own.
+                _resync_feature_flow(include_keywords)
+                raise SystemExit(0)
             if edit_section != "all":
                 _run_targeted_edit(
                     edit_section,
