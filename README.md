@@ -180,7 +180,7 @@ When you open the tool and a report already exists, it asks what to do:
 | `update` | Refreshes all features |
 | `update checkout redesign` | Refreshes only the feature named exactly *Checkout Redesign* |
 | `update all checkout redesign` | Refreshes every feature whose name contains "checkout redesign" — e.g. *Checkout Redesign*, *Checkout Redesign: Payments*, *Checkout Redesign: Mobile polish* |
-| `resync checkout redesign` | Moves *Checkout Redesign*'s tasks in from wherever else they're currently sitting (see below) |
+| `resync checkout redesign` | Moves any epic whose name *contains* "checkout redesign" — same matching as `update all`, not the exact match `update` uses — in from wherever its tasks are currently sitting (see below) |
 | `resync` | Same as above, but shows a picker of your configured keywords first |
 | `new` | Starts setup from scratch with new keywords |
 | `edit` | Opens the keyword editor to add or remove features |
@@ -196,7 +196,9 @@ If you rename an epic (or make its title more specific) so it now matches a *dif
 resync Checkout Redesign: post-release
 ```
 
-This moves that keyword's tasks in from wherever they're currently sitting and refreshes their status, without touching anything else in the report — no full rebuild needed.
+This moves that keyword's tasks in from wherever they're currently sitting and refreshes their status, without touching anything else in the report — no full rebuild needed. It also syncs to Google Drive afterward, same as `update`/`new`, if you have that configured.
+
+Matched epics still resolve to the most specific keyword you have configured — see [When keywords overlap](#when-keywords-overlap) — so an epic matching both a broad and a more specific tracked keyword ends up under the specific one, not necessarily the keyword you typed.
 
 ---
 
