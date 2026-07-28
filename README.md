@@ -43,6 +43,10 @@ You can also exclude keywords. Any epic matching an excluded keyword is dropped 
 
 For example, if `Checkout Redesign` pulls in `Checkout Redesign: post-release` and you don't want that skewing your pace and ETA, exclude `post-release` and it's gone.
 
+### Epics with no tasks yet
+
+A matched epic with no tasks under it yet still needs tracking, so it becomes a row of its own: its Jira summary becomes the Task title, its own status transitions become the Start/End dates, and Task type shows `Epic` instead of `Task`/`Bug`/etc. so it's easy to tell apart from real tasks.
+
 ---
 
 ### Feature status filter
