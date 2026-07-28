@@ -90,7 +90,7 @@ def prompt(text, default=None):
 def prompt_existing_report_action():
     while True:
         value = input(
-            "Type: new / edit / update / update [keyword]: "
+            "Type: new / edit / update / update [keyword] / resync [keyword]: "
         ).strip().lower()
         cache = "--cache" in value
         value = value.replace("--cache", "").strip()
@@ -105,7 +105,12 @@ def prompt_existing_report_action():
         if value.startswith("update ") or value.startswith("upd "):
             pattern = value.split(" ", 1)[1].strip()
             return ("update", cache, pattern)
-        print("Please enter new, edit, update, or quit.")
+        if value == "resync":
+            return ("resync", False, None)
+        if value.startswith("resync "):
+            pattern = value.split(" ", 1)[1].strip()
+            return ("resync", False, pattern)
+        print("Please enter new, edit, update, resync, or quit.")
 
 
 def prompt_list(text, default=None):
@@ -1038,9 +1043,12 @@ def _do_drive_upload(output, local_only, drive_folder, google_client_secrets):
 
 
 def _prompt_edit_section():
-    _OPTIONS = {"all", "keyword", "keywords", "jira key", "jira keys", "jira", "keyword eta", "eta", "url", "drive", "time", "timezone", "status", "statuses", "done status", "done statuses", "done", "resync", "resync feature", "resync a feature"}
+    # "resync a feature" isn't offered here — it's its own top-level command
+    # (`resync` / `resync [keyword]` at the main prompt), not a settings
+    # field to edit, so it doesn't belong in this list.
+    _OPTIONS = {"all", "keyword", "keywords", "jira key", "jira keys", "jira", "keyword eta", "eta", "url", "drive", "time", "timezone", "status", "statuses", "done status", "done statuses", "done"}
     while True:
-        value = input("Edit: all / keyword / Jira key / keyword eta / URL / time / Done status / resync a feature: ").strip().lower()
+        value = input("Edit: all / keyword / Jira key / keyword eta / URL / time / Done status: ").strip().lower()
         if not value or value == "all":
             return "all"
         if value in {"keyword", "keywords"}:
@@ -1055,9 +1063,7 @@ def _prompt_edit_section():
             return "time"
         if value in {"status", "statuses", "done status", "done statuses", "done"}:
             return "status"
-        if value in {"resync", "resync feature", "resync a feature"}:
-            return "resync"
-        print("Enter: all, keyword, Jira key, keyword eta, URL, time, Done status, or resync a feature.")
+        print("Enter: all, keyword, Jira key, keyword eta, URL, time, or Done status.")
 
 
 def _run_targeted_edit(
@@ -1210,32 +1216,42 @@ def _run_targeted_edit(
     save_state(_state)
 
 
-def _resync_feature_flow(include_keywords):
+def _resync_feature_flow(include_keywords, keyword=None):
     """Move one existing keyword's epics' tasks into their own feature
     without touching anything else in the report — e.g. an epic that used
     to only match a generic catch-all keyword got renamed/re-scoped to
     match a more specific one, and its tasks are stuck under the old label.
     `--update --new-features <keyword>` already does exactly this (see
     jira-report.py), but was only ever reachable by invoking jira-report.py
-    directly — this exposes it from the interactive menu instead."""
-    if not include_keywords:
-        raise SystemExit("No keywords configured yet — nothing to resync.")
-    print(
-        "Which feature keyword should be resynced? This moves any of its "
-        "epics' tasks in from wherever else they're currently sitting, "
-        "without touching anything else."
-    )
-    for kw in include_keywords:
-        print(f"  {kw}")
-    while True:
-        chosen = input("→ Keyword to resync (Enter to cancel): ").strip()
-        if not chosen or chosen.lower() in BACK_COMMANDS:
-            raise SystemExit(0)
-        matches = [kw for kw in include_keywords if kw.strip().lower() == chosen.lower()]
-        if matches:
-            break
-        print("Enter one of the keywords listed above exactly.")
-    resync_keyword = matches[0]
+    directly — this exposes it from the interactive menu (`resync` /
+    `resync [keyword]` at the main prompt) instead.
+
+    If `keyword` isn't given (bare "resync"), prompts with a picker over
+    configured keywords. If it IS given ("resync [keyword]"), it's passed
+    straight through without validating it against configured keywords —
+    same as "update [keyword]" already does — so jira-report.py's own epic
+    matching is the source of truth, not a second copy of it here."""
+    if keyword:
+        resync_keyword = keyword
+    else:
+        if not include_keywords:
+            raise SystemExit("No keywords configured yet — nothing to resync.")
+        print(
+            "Which feature keyword should be resynced? This moves any of its "
+            "epics' tasks in from wherever else they're currently sitting, "
+            "without touching anything else."
+        )
+        for kw in include_keywords:
+            print(f"  {kw}")
+        while True:
+            chosen = input("→ Keyword to resync (Enter to cancel): ").strip()
+            if not chosen or chosen.lower() in BACK_COMMANDS:
+                raise SystemExit(0)
+            matches = [kw for kw in include_keywords if kw.strip().lower() == chosen.lower()]
+            if matches:
+                break
+            print("Enter one of the keywords listed above exactly.")
+        resync_keyword = matches[0]
 
     ensure_jira_token()
     if not _ensure_openpyxl():
@@ -1397,6 +1413,9 @@ def main():
         if action == "update":
             update_run = True
             stage = 999
+        elif action == "resync":
+            _resync_feature_flow(include_keywords, filter_pattern)
+            raise SystemExit(0)
         elif action == "new":
             fresh_run = True
             print_line("Rebuilding new report using local settings...")
@@ -1413,12 +1432,6 @@ def main():
             # currently Done shows 0 child tasks and vanishes from the report.
             edit_run = True
             edit_section = _prompt_edit_section()
-            if edit_section == "resync":
-                # Doesn't touch settings at all — nothing for
-                # _run_targeted_edit to persist — so it's handled entirely
-                # separately and exits on its own.
-                _resync_feature_flow(include_keywords)
-                raise SystemExit(0)
             if edit_section != "all":
                 _run_targeted_edit(
                     edit_section,

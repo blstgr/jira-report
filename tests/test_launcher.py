@@ -50,7 +50,7 @@ TEMPLATE_CONTENT = json.dumps({
 }, indent=2)
 
 REAL_SETTINGS = json.dumps({
-    "features": [{"keyword": "CA switch", "eta": "2026-07-11"}],
+    "features": [{"keyword": "Checkout Redesign", "eta": "2026-07-11"}],
     "exclude": [],
     "project_keys": ["ABC"],
     "output": "report/roadmap 2026.xlsx",
@@ -127,9 +127,9 @@ def test_action_update():
 
 
 def test_action_update_with_keyword():
-    action, cache, pattern = _action(["update ca switch"])
+    action, cache, pattern = _action(["update checkout redesign"])
     assert action == "update"
-    assert pattern == "ca switch"
+    assert pattern == "checkout redesign"
     assert not cache
 
 
@@ -137,6 +137,17 @@ def test_action_update_cache_flag():
     action, cache, pattern = _action(["update --cache"])
     assert action == "update"
     assert cache is True
+
+
+def test_action_resync_bare():
+    assert _action(["resync"]) == ("resync", False, None)
+
+
+def test_action_resync_with_keyword():
+    action, cache, pattern = _action(["resync checkout redesign: post-release"])
+    assert action == "resync"
+    assert pattern == "checkout redesign: post-release"
+    assert not cache
 
 
 def test_action_quit():
@@ -245,8 +256,8 @@ def test_date_number_only():
 # ═══════════════════════════════════════════════════════════════════════════
 
 def test_sanitize_keyword_values_strips_and_dedupes():
-    result = launcher.sanitize_keyword_values(["CA switch ", " ca switch", "Edge"])
-    assert result == ["CA switch", "ca switch", "Edge"]
+    result = launcher.sanitize_keyword_values(["Checkout Redesign ", " checkout redesign", "Payments"])
+    assert result == ["Checkout Redesign", "checkout redesign", "Payments"]
 
 
 def test_sanitize_keyword_values_removes_empty():
@@ -259,8 +270,8 @@ def test_sanitize_keyword_values_none():
 
 
 def test_sanitize_expected_tasks_per_week_valid():
-    result = launcher.sanitize_expected_tasks_per_week({"CA switch": "3.5", "Edge": 2})
-    assert result == {"CA switch": 3.5, "Edge": 2.0}
+    result = launcher.sanitize_expected_tasks_per_week({"Checkout Redesign": "3.5", "Payments": 2})
+    assert result == {"Checkout Redesign": 3.5, "Payments": 2.0}
 
 
 def test_sanitize_expected_tasks_per_week_rejects_zero_and_negative():

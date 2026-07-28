@@ -140,9 +140,13 @@ The repo also includes `settings/roadmap-settings.json` — an empty template fo
 
 The tool works on both Mac and Windows.
 
+All you have to do is double-click `jira-report/roadmap` — it opens a terminal window and guides you through setup and how to use it.
+
 - **Mac/Windows** — double-click `jira-report/roadmap`
 
-A terminal window opens and walks you through the rest.
+Optionally, you can also call it directly from a terminal instead of double-clicking:
+- **Mac** — `cd` into the `jira-report` folder and run `./roadmap`
+- **Windows** — `cd` into the `jira-report` folder and run `app\roadmap.bat`
 
 > **Mac: first-run security warning.** Since `roadmap` is a downloaded, unsigned script, macOS Gatekeeper will block it the first time. To allow it:
 > 1. Try to open `roadmap` once — macOS says *"roadmap" Not Opened* — click **Done**.
@@ -176,9 +180,23 @@ When you open the tool and a report already exists, it asks what to do:
 | `update` | Refreshes all features |
 | `update checkout redesign` | Refreshes only the feature named exactly *Checkout Redesign* |
 | `update all checkout redesign` | Refreshes every feature whose name contains "checkout redesign" — e.g. *Checkout Redesign*, *Checkout Redesign: Payments*, *Checkout Redesign: Mobile polish* |
+| `resync checkout redesign` | Moves *Checkout Redesign*'s tasks in from wherever else they're currently sitting (see below) |
+| `resync` | Same as above, but shows a picker of your configured keywords first |
 | `new` | Starts setup from scratch with new keywords |
 | `edit` | Opens the keyword editor to add or remove features |
 | `quit` | Closes without doing anything |
+
+`edit` then asks which section to change: `all`, `keyword`, `Jira key`, `keyword eta`, `URL`, `time`, or `Done status`.
+
+#### Resyncing a feature
+
+If you rename an epic (or make its title more specific) so it now matches a *different* keyword than the one it was originally grouped under, its tasks stay under the old feature — the tool never re-checks that on its own. Run `resync [keyword]` to fix it, e.g.:
+
+```
+resync Checkout Redesign: post-release
+```
+
+This moves that keyword's tasks in from wherever they're currently sitting and refreshes their status, without touching anything else in the report — no full rebuild needed.
 
 ---
 

@@ -36,8 +36,8 @@ spec.loader.exec_module(jr)
 # ── normalize_keyword ──────────────────────────────────────────────────────
 
 def test_normalize_strips_punctuation_and_lowercases():
-    assert jr.normalize_keyword("CA switch: BI") == "caswitchbi"
-    assert jr.normalize_keyword("CA switch") == "caswitch"
+    assert jr.normalize_keyword("Checkout Redesign: BI") == "checkoutredesignbi"
+    assert jr.normalize_keyword("Checkout Redesign") == "checkoutredesign"
     assert jr.normalize_keyword("ca change") == "cachange"
 
 
@@ -49,12 +49,12 @@ def test_normalize_collapses_spaces_and_hyphens():
 # ── feature filter logic (mirrors what main() does) ───────────────────────
 
 FEATURES = [
-    "CA switch",
-    "CA switch: post-release",
-    "CA switch: BI",
-    "CA switch: release preparation",
-    "CA switch: BI post-release",
-    "Edge: single-domain ssl",
+    "Checkout Redesign",
+    "Checkout Redesign: post-release",
+    "Checkout Redesign: BI",
+    "Checkout Redesign: release preparation",
+    "Checkout Redesign: BI post-release",
+    "Payments: single-domain ssl",
     "Maintenance",
 ]
 
@@ -68,38 +68,38 @@ def apply_filter(features, pattern, mode_all):
 
 
 def test_exact_filter_matches_one():
-    result = apply_filter(FEATURES, "CA switch", mode_all=False)
-    assert result == ["CA switch"]
+    result = apply_filter(FEATURES, "Checkout Redesign", mode_all=False)
+    assert result == ["Checkout Redesign"]
 
 
 def test_exact_filter_case_insensitive():
-    result = apply_filter(FEATURES, "ca switch", mode_all=False)
-    assert result == ["CA switch"]
+    result = apply_filter(FEATURES, "checkout redesign", mode_all=False)
+    assert result == ["Checkout Redesign"]
 
 
 def test_exact_filter_no_match():
-    result = apply_filter(FEATURES, "Vector SSL", mode_all=False)
+    result = apply_filter(FEATURES, "Loyalty Program", mode_all=False)
     assert result == []
 
 
 def test_all_filter_matches_substring_group():
-    result = apply_filter(FEATURES, "ca switch", mode_all=True)
-    assert "CA switch" in result
-    assert "CA switch: BI" in result
-    assert "CA switch: release preparation" in result
-    assert "CA switch: post-release" in result
-    assert "CA switch: BI post-release" in result
-    assert "Edge: single-domain ssl" not in result
+    result = apply_filter(FEATURES, "checkout redesign", mode_all=True)
+    assert "Checkout Redesign" in result
+    assert "Checkout Redesign: BI" in result
+    assert "Checkout Redesign: release preparation" in result
+    assert "Checkout Redesign: post-release" in result
+    assert "Checkout Redesign: BI post-release" in result
+    assert "Payments: single-domain ssl" not in result
     assert "Maintenance" not in result
 
 
 def test_all_filter_does_not_bleed_across_projects():
-    result = apply_filter(FEATURES, "edge", mode_all=True)
-    assert result == ["Edge: single-domain ssl"]
+    result = apply_filter(FEATURES, "payments", mode_all=True)
+    assert result == ["Payments: single-domain ssl"]
 
 
 def test_all_filter_no_match():
-    result = apply_filter(FEATURES, "vector ssl", mode_all=True)
+    result = apply_filter(FEATURES, "loyalty program", mode_all=True)
     assert result == []
 
 
@@ -216,9 +216,9 @@ def test_parse_date_none():
 # ── sanitize_feature_eta_dates ─────────────────────────────────────────────
 
 def test_sanitize_feature_eta_dates_valid():
-    result = jr.sanitize_feature_eta_dates({"CA switch": "2026-06-28", "Edge": "2026-08-01"})
-    assert result["CA switch"] == "2026-06-28"
-    assert result["Edge"] == "2026-08-01"
+    result = jr.sanitize_feature_eta_dates({"Checkout Redesign": "2026-06-28", "Payments": "2026-08-01"})
+    assert result["Checkout Redesign"] == "2026-06-28"
+    assert result["Payments"] == "2026-08-01"
 
 
 def test_sanitize_feature_eta_dates_invalid_dropped():
@@ -235,8 +235,8 @@ def test_sanitize_feature_eta_dates_empty_key_dropped():
 # ── scope_signature ────────────────────────────────────────────────────────
 
 def test_scope_signature_structure():
-    sig = jr.scope_signature(["CA switch", "Edge"], ["KWD1"])
-    assert sig == {"include": ["CA switch", "Edge"], "exclude": ["KWD1"]}
+    sig = jr.scope_signature(["Checkout Redesign", "Payments"], ["KWD1"])
+    assert sig == {"include": ["Checkout Redesign", "Payments"], "exclude": ["KWD1"]}
 
 
 def test_scope_signature_empty():

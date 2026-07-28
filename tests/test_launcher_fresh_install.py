@@ -198,17 +198,17 @@ def test_editing_keywords_routes_through_update_not_a_bare_rebuild(sandboxed_lau
     assert "--fresh" not in captured_cmds[0]
 
 
-def test_edit_resync_feature_runs_update_with_new_features_for_chosen_keyword(
+def test_resync_bare_shows_picker_and_runs_update_with_new_features(
     sandboxed_launcher_with_existing_settings, monkeypatch
 ):
     # This is what exposes --update --new-features "<keyword>" (see
     # jira-report.py's _existing_feature_by_key relabeling) from the
     # interactive menu — previously only reachable by invoking
-    # jira-report.py directly on the command line.
+    # jira-report.py directly on the command line. Bare "resync" at the
+    # main prompt shows a picker over configured keywords.
     launcher, settings_dir, captured_cmds = sandboxed_launcher_with_existing_settings
     answers = ScriptedInput([
-        "edit",              # menu
-        "resync",            # _prompt_edit_section
+        "resync",             # menu: bare resync -> picker
         "checkout redesign",  # keyword to resync — matches the fixture's configured feature
     ])
     monkeypatch.setattr(builtins, "input", answers)
@@ -225,12 +225,32 @@ def test_edit_resync_feature_runs_update_with_new_features_for_chosen_keyword(
     assert "--fresh" not in captured_cmds[0]
 
 
-def test_edit_resync_feature_reprompts_on_unknown_keyword(
+def test_resync_with_keyword_skips_the_picker_entirely(
+    sandboxed_launcher_with_existing_settings, monkeypatch
+):
+    # "resync [keyword]" at the main prompt — same as "update [keyword]" —
+    # passes the typed keyword straight through without validating it
+    # against configured keywords first; jira-report.py's own epic matching
+    # is the source of truth, not a second copy of it here.
+    launcher, settings_dir, captured_cmds = sandboxed_launcher_with_existing_settings
+    answers = ScriptedInput(["resync checkout redesign: post-release"])
+    monkeypatch.setattr(builtins, "input", answers)
+    monkeypatch.setattr(sys, "argv", ["roadmap-launcher.py"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        launcher.main()
+
+    assert exc_info.value.code == 0
+    assert len(captured_cmds) == 1
+    assert "--new-features" in captured_cmds[0]
+    assert "checkout redesign: post-release" in captured_cmds[0]
+
+
+def test_resync_bare_reprompts_on_unknown_keyword_in_picker(
     sandboxed_launcher_with_existing_settings, monkeypatch
 ):
     launcher, settings_dir, captured_cmds = sandboxed_launcher_with_existing_settings
     answers = ScriptedInput([
-        "edit",
         "resync",
         "not a real keyword",
         "checkout redesign",
@@ -246,11 +266,11 @@ def test_edit_resync_feature_reprompts_on_unknown_keyword(
     assert "checkout redesign" in captured_cmds[0]
 
 
-def test_edit_resync_feature_cancel_does_not_touch_settings(
+def test_resync_bare_cancel_does_not_run_anything(
     sandboxed_launcher_with_existing_settings, monkeypatch
 ):
     launcher, settings_dir, captured_cmds = sandboxed_launcher_with_existing_settings
-    answers = ScriptedInput(["edit", "resync", ""])  # Enter with nothing = cancel
+    answers = ScriptedInput(["resync", ""])  # Enter with nothing = cancel
     monkeypatch.setattr(builtins, "input", answers)
     monkeypatch.setattr(sys, "argv", ["roadmap-launcher.py"])
 
