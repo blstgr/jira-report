@@ -181,14 +181,15 @@ When you open the tool and a report already exists, it asks what to do:
 
 | Command | What it does |
 |---|---|
-| `update` | Refreshes all features |
-| `update checkout redesign` | Refreshes only the feature named exactly *Checkout Redesign* |
-| `update all checkout redesign` | Refreshes every feature whose name contains "checkout redesign" — e.g. *Checkout Redesign*, *Checkout Redesign: Payments*, *Checkout Redesign: Mobile polish* |
-| `resync checkout redesign` | Moves any epic whose name *contains* "checkout redesign" — same matching as `update all`, not the exact match `update` uses — in from wherever its tasks are currently sitting (see below) |
+| `new` | Creates a new report with local settings |
+| `update` | Updates all not-done tasks |
+| `update checkout redesign` | Updates not-done tasks in the feature named exactly *Checkout Redesign* |
+| `update all checkout redesign` | Updates not-done tasks in every feature whose name contains "checkout redesign" — e.g. *Checkout Redesign*, *Checkout Redesign: Payments*, *Checkout Redesign: Mobile polish* |
+| `edit` | Changes local settings |
+| `resync checkout redesign` | Refreshes all tasks and epic names for features containing "checkout redesign". Use this if you've changed epic names or reorganised which epics need to be independent features and don't want to rebuild the whole report from scratch |
 | `resync` | Same as above, but shows a picker of your configured keywords first |
-| `new` | Starts setup from scratch with new keywords |
-| `edit` | Opens the keyword editor to add or remove features |
-| `quit` | Closes without doing anything |
+| `/b` | Goes back to the previous step, during either initial setup or `edit` |
+| `quit` / `Ctrl+C` | Exits roadmap at any stage |
 
 `edit` then asks which section to change: `all`, `keyword`, `Jira key`, `keyword eta`, `URL`, `time`, or `Done status`.
 

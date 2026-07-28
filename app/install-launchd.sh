@@ -42,6 +42,18 @@ fi
 # fails as "Operation not permitted" / "cannot access parent directories"
 # at shell init, before the wrapped script ever runs.
 LAUNCHER_DIR="$HOME/Library/Application Scripts/jira-report"
+# Per-user log location. StandardOutPath/StandardErrorPath used to be a
+# hardcoded /tmp/jira-report-*.log shared by every account on the machine —
+# whichever user's job ran first created that file owned by them with mode
+# 644 (no group/other write), so any OTHER user's launchd job then failed
+# outright trying to open it for stdout/stderr redirection: the spawn never
+# happens at all (launchctl list shows a nonzero exit, the log stays empty,
+# and none of run-daily-update.py's own _notify() calls ever get a chance to
+# fire — the only notification seen is macOS's own generic "background item
+# added" one for the LaunchAgent itself). ~/Library/Logs is per-user and
+# already the conventional macOS location for this.
+LOG_DIR="$HOME/Library/Logs/jira-report"
+mkdir -p "$LOG_DIR"
 # macOS's "Allow in the Background" list displays the leaf filename of
 # ProgramArguments[0] itself — not the interpreter that filename's shebang
 # resolves to. So the wrapper script's own filename IS the name the user
@@ -72,6 +84,8 @@ install_plist() {
         -e "s|__JIRA_REPORT_LAUNCHER_DIR__|$LAUNCHER_DIR|g" \
         -e "s|__JIRA_REPORT_LAUNCHER__|$LAUNCHER|g" \
         -e "s|__JIRA_REPORT_MONITOR_LAUNCHER__|$MONITOR_LAUNCHER|g" \
+        -e "s|__JIRA_REPORT_LOG__|$LOG_DIR/daily-update.log|g" \
+        -e "s|__JIRA_REPORT_MONITOR_LOG__|$LOG_DIR/missed-update-check.log|g" \
         -e "s|__JIRA_REPORT_HOUR__|$HOUR|g" \
         -e "s|__JIRA_REPORT_MINUTE__|$MINUTE|g" \
         -e "s|__JIRA_REPORT_TZ__|$UPDATE_TZ|g" \

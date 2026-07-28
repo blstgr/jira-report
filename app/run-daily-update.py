@@ -142,7 +142,7 @@ def main():
 
     if not _ensure_openpyxl():
         print("[setup] couldn't install openpyxl — skipping this run.", flush=True)
-        # This runs headless with nobody watching /tmp/jira-report-launchd.log
+        # This runs headless with nobody watching ~/Library/Logs/jira-report/daily-update.log
         # — without a notification, a scheduled update can silently stop
         # working indefinitely (this exact failure mode sat unnoticed across
         # multiple days before anyone realized the report had gone stale).
@@ -188,13 +188,12 @@ def main():
     if output_path:
         drive_sync_failed = _sync_to_drive(output_path) is False
 
-    drive_url = _drive_url()
     if drive_sync_failed:
         # _sync_to_drive() only ever logged this to a /tmp file nobody
         # watches — the report itself updated fine, but the user would have
         # no idea Drive was left stale until they noticed by hand.
         message = f"{message} (Drive sync failed — check the log.)"
-    _notify(message, open_url=drive_url)
+    _notify(message)
 
 
 def _sync_to_drive(output_path: str):
@@ -219,15 +218,7 @@ def _sync_to_drive(output_path: str):
         return False
 
 
-def _drive_url() -> str:
-    try:
-        settings = json.loads(STATE.read_text())
-        return settings.get("drive_folder") or ""
-    except Exception:
-        return ""
-
-
-def _notify(message: str, open_url: str = "") -> None:
+def _notify(message: str) -> None:
     print(f"[notify] {message}", flush=True)
     uid = str(os.getuid())
     import shutil
@@ -240,11 +231,22 @@ def _notify(message: str, open_url: str = "") -> None:
         notifier,
         "-message", message,
         "-title", "Jira Roadmap",
+        # terminal-notifier's own identity (fr.julienxx.oss.terminal-notifier)
+        # has never been granted Notification Center permission on a typical
+        # Mac, so a notification posted under it is silently dropped — no
+        # error, exit code still 0, it just never appears. Spoofing the
+        # sender as the system's own Script Editor bundle is what actually
+        # gets it displayed. This used to only apply when there was no
+        # -open url (on the assumption -sender and -open didn't mix), but
+        # confirmed live: the un-spoofed -open variant never even displays,
+        # and -open combined with -sender displays but the click no longer
+        # opens the URL (sender spoofing breaks click-through) — so there's
+        # no configuration where -open actually works here. Always spoofing
+        # the sender and dropping -open trades away the "click notification
+        # to jump to Drive" nicety for the message reliably showing up at
+        # all, which is the one that actually matters.
+        "-sender", "com.apple.ScriptEditor2",
     ]
-    if open_url:
-        cmd += ["-open", open_url]
-    else:
-        cmd += ["-sender", "com.apple.ScriptEditor2"]
     r = subprocess.run(cmd, capture_output=True, text=True)
     print(f"[notify] exit={r.returncode} stdout={r.stdout!r} stderr={r.stderr!r}", flush=True)
     if r.returncode != 0:

@@ -1,18 +1,18 @@
 {
   "steps": [
-    "Do this once (Google's setup screens changed in 2026 — this matches the current flow):",
+    "Do this once:",
     "1. Open https://console.cloud.google.com/",
-    "2. At the top of the page, click 'Select a project'.",
-    "3. Click Create a new project > type Project Name > 'Create' > 'Select project'",
-    "4. In the search bar, find 'Google Drive API' and click 'Enable'.",
-    "5. Go to APIs & Services > OAuth consent screen >'Get Started'.",
-    "6. Enter App name: jira-report and your email as the support email > 'Continue'.",
-    "7. Under Audience, choose 'External' > 'Continue'.",
-    "8. Enter your email again as the contact email, check the agreement box > 'Continue' > 'Create'.",
-    "9. Go to the 'Data Access' tab > click 'Add or Remove Scopes' > find and select  '.../auth/drive.file' > 'Update' > 'Save'.",
-    "10. Go to the 'Audience' tab > Scroll to 'Test users' > add your Google Drive email > 'Save'.",
-    "11. Go to the 'Clients' tab > click 'Create Client' > choose 'Desktop app' > name it > 'Create'.",
-    "12. Copy 'Client secret'(only shown once) and download the JSON.",
+    "2. At the top of the page, click Select a project.",
+    "3. Click Create a new project > type Project Name > Create > Select project",
+    "4. In the search bar, find Google Drive API and click Enable.",
+    "5. Go to APIs & Services > OAuth consent screen >Get Started.",
+    "6. Enter App name: jira-report and your email as the support email > Next.",
+    "7. Under Audience, choose External > Next.",
+    "8. Enter your email again as the contact email, check the agreement box > Continue > Create.",
+    "9. Go to the Data Access tab > click Add or Remove Scopes > find and select  .../auth/drive.file > Update > Save.",
+    "10. Go to the Audience tab > Scroll to Test users > add your Google Drive email > Save.",
+    "11. Go to the Clients tab > click Create Client > choose Desktop app > name it > Create.",
+    "12. Copy Client secret(only shown once) and download the JSON.",
     "13. Open the downloaded JSON file in TextEdit or Notepad and paste its full contents here."
   ]
 }

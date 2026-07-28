@@ -107,6 +107,32 @@ def test_both_jobs_route_through_the_safe_application_scripts_wrapper(fake_home)
             )
 
 
+def test_log_paths_are_scoped_to_this_users_home_not_a_shared_tmp_path(fake_home):
+    # Regression: StandardOutPath/StandardErrorPath used to be a hardcoded
+    # /tmp/jira-report-*.log — identical on every account on the machine.
+    # Whichever user's job ran first created that file owned by them at
+    # mode 644 (no group/other write); any OTHER user's launchd job then
+    # failed outright trying to open the same path for stdout/stderr
+    # redirection — the process never even spawned (launchctl list showed a
+    # nonzero exit, the log stayed empty, and none of run-daily-update.py's
+    # own _notify() calls ever got a chance to fire). Confirmed live on a
+    # real machine with two accounts sharing /tmp/jira-report-launchd.log.
+    _run_install(fake_home)
+    for label in ("roadmap-jira-report-update", "roadmap-jira-report-missed-update-check"):
+        plist = _load_plist(fake_home, label)
+        for log_key in ("StandardOutPath", "StandardErrorPath"):
+            log_path = plist[log_key]
+            assert str(fake_home) in log_path, (
+                f"{label}: {log_key} {log_path!r} is not scoped under this user's "
+                f"home — a path shared across accounts (e.g. plain /tmp/...) causes "
+                f"the job to silently fail to spawn for whichever user didn't create "
+                f"the file first."
+            )
+            assert not log_path.startswith("/tmp/"), (
+                f"{label}: {log_key} {log_path!r} must not be a bare /tmp path"
+            )
+
+
 def test_monitor_wrapper_execs_check_missed_update_with_preferred_python3(fake_home):
     _run_install(fake_home)
     monitor_path = _safe_scripts_dir(fake_home) / "Jira Roadmap Update Monitor"

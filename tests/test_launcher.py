@@ -301,6 +301,79 @@ def test_parse_update_time_invalid():
     assert launcher.parse_update_time("") is None
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# _run_targeted_edit("time", ...) — automatic-update schedule editing
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _run_time_edit(auto_update=True, update_time="11:00", update_timezone="Europe/Kiev"):
+    return launcher._run_targeted_edit(
+        "time",
+        ["Checkout Redesign"], [], [],
+        {}, {},
+        True, "", None,
+        update_time, update_timezone, auto_update,
+        None,
+    )
+
+
+def test_edit_time_back_at_first_question_leaves_schedule_unchanged(isolated_settings):
+    # Regression: "/b" at the very first "Automatic updates?" question used
+    # to be treated as an ordinary skip (same as Enter) and the flow just
+    # kept going to the time/timezone questions anyway — the user's report
+    # was "/b doesnt work in edit". A single scripted answer that raises
+    # StopIteration if asked again proves the section actually stopped here.
+    with patch("builtins.input", side_effect=["/b"]):
+        _run_time_edit(auto_update=True, update_time="11:00", update_timezone="Europe/Kiev")
+    saved = json.loads((isolated_settings / "roadmap-settings.local.json").read_text())
+    assert saved["auto_update"] is True
+    assert saved["update_time"] == "11:00"
+    assert saved["update_timezone"] == "Europe/Kiev"
+
+
+def test_edit_time_back_at_time_question_returns_to_first_question(isolated_settings, monkeypatch):
+    # "/b" typed while answering the time question must return to the
+    # "Automatic updates?" question, not silently skip straight through to
+    # the (removed) timezone question the way it used to.
+    monkeypatch.setattr(launcher.subprocess, "run", MagicMock())
+    with patch("builtins.input", side_effect=["y", "/b", "n"]):
+        _run_time_edit(auto_update=False, update_time="11:00", update_timezone="Europe/Kiev")
+    saved = json.loads((isolated_settings / "roadmap-settings.local.json").read_text())
+    assert saved["auto_update"] is False
+
+
+def test_edit_time_no_longer_asks_for_timezone_separately(isolated_settings):
+    # Regression: this section used to ask a THIRD, separate "Timezone
+    # (e.g. ...)" question every time, even though the main setup wizard
+    # stopped asking that long ago (it auto-detects instead) — this is what
+    # produced "why am i still asked about timezone?". Only two scripted
+    # answers are given; a third input() call would raise StopIteration.
+    with patch("builtins.input", side_effect=["y", "09:30"]):
+        _run_time_edit(auto_update=True, update_time="11:00", update_timezone="Europe/Kiev")
+    saved = json.loads((isolated_settings / "roadmap-settings.local.json").read_text())
+    assert saved["update_time"] == "09:30"
+    assert saved["update_timezone"] == "Europe/Kiev"  # kept, not re-asked
+
+
+def test_edit_time_auto_detects_timezone_when_unset(isolated_settings):
+    with patch("builtins.input", side_effect=["y", "10:15"]), \
+         patch.object(launcher, "_detect_system_timezone", return_value="America/New_York"):
+        _run_time_edit(auto_update=True, update_time="11:00", update_timezone="")
+    saved = json.loads((isolated_settings / "roadmap-settings.local.json").read_text())
+    assert saved["update_timezone"] == "America/New_York"
+
+
+def test_edit_time_turning_off_uninstalls_launchd(isolated_settings, monkeypatch):
+    fake_run = MagicMock()
+    monkeypatch.setattr(launcher.subprocess, "run", fake_run)
+    with patch("builtins.input", side_effect=["n"]):
+        _run_time_edit(auto_update=True, update_time="11:00", update_timezone="Europe/Kiev")
+    saved = json.loads((isolated_settings / "roadmap-settings.local.json").read_text())
+    assert saved["auto_update"] is False
+    if launcher.sys.platform == "darwin":
+        fake_run.assert_called_once()
+        assert "uninstall-launchd.sh" in str(fake_run.call_args[0][0])
+
+
 def test_detect_system_timezone_uses_iana_name_from_localtime():
     with patch("os.path.realpath", return_value="/usr/share/zoneinfo/Europe/Kyiv"):
         assert launcher._detect_system_timezone() == "Europe/Kyiv"

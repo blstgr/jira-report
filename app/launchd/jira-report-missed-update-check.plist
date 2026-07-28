@@ -13,8 +13,8 @@
   <key>StartInterval</key>
   <integer>3600</integer>
   <key>StandardOutPath</key>
-  <string>/tmp/jira-report-monitor-launchd.log</string>
+  <string>__JIRA_REPORT_MONITOR_LOG__</string>
   <key>StandardErrorPath</key>
-  <string>/tmp/jira-report-monitor-launchd.log</string>
+  <string>__JIRA_REPORT_MONITOR_LOG__</string>
 </dict>
 </plist>

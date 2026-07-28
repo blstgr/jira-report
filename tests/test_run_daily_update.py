@@ -139,6 +139,139 @@ def test_ensure_openpyxl_non_pep668_failure_does_not_retry():
     assert fake_run.call_count == 1
 
 
+def _tripwire(name):
+    def _raise(*a, **kw):
+        raise AssertionError(f"{name} should not have been called")
+    return _raise
+
+
+def test_main_skips_silently_when_already_updated_today(tmp_path, monkeypatch):
+    # This is the exact guard that made a correctly-firing scheduled job
+    # look like nothing happened: if today's report already updated once,
+    # main() returns immediately with zero notification and zero log
+    # output. Confirmed real: editing the schedule time to a near-future
+    # minute, the job fired right on time, hit this guard, and exited
+    # clean — which looked indistinguishable from "the schedule is broken"
+    # until the stamp file was checked.
+    state_path = tmp_path / "roadmap-settings.local.json"
+    state_path.write_text(json.dumps({"update_time": "08:00", "update_timezone": "UTC"}))
+    monkeypatch.setattr(rdu, "STATE", state_path)
+    stamp_path = tmp_path / ".last-daily-run-utc"
+    today_key = rdu.local_now("UTC").strftime("%Y-%m-%d")
+    stamp_path.write_text(today_key)
+    monkeypatch.setattr(rdu, "STAMP", stamp_path)
+    monkeypatch.setattr(rdu, "_restore_jira_host_from_settings", lambda: None)
+    monkeypatch.setattr(rdu, "_restore_jira_host_from_external_config", lambda: None)
+    monkeypatch.setattr(rdu, "_ensure_openpyxl", _tripwire("_ensure_openpyxl"))
+    monkeypatch.setattr(rdu, "_run_update", _tripwire("_run_update"))
+    monkeypatch.setattr(rdu, "_notify", _tripwire("_notify"))
+    monkeypatch.setattr(sys, "argv", ["run-daily-update.py"])
+
+    rdu.main()  # must return without touching any of the tripwires above
+
+
+def test_main_force_flag_bypasses_the_already_ran_today_guard(tmp_path, monkeypatch):
+    state_path = tmp_path / "roadmap-settings.local.json"
+    state_path.write_text(json.dumps({"update_time": "08:00", "update_timezone": "UTC"}))
+    monkeypatch.setattr(rdu, "STATE", state_path)
+    stamp_path = tmp_path / ".last-daily-run-utc"
+    stamp_path.write_text(rdu.local_now("UTC").strftime("%Y-%m-%d"))
+    monkeypatch.setattr(rdu, "STAMP", stamp_path)
+    monkeypatch.setattr(rdu, "_restore_jira_host_from_settings", lambda: None)
+    monkeypatch.setattr(rdu, "_restore_jira_host_from_external_config", lambda: None)
+    monkeypatch.setattr(rdu, "_ensure_openpyxl", lambda: True)
+    monkeypatch.setattr(rdu, "_run_update", lambda cmd: ("Report updated.", False, None))
+    monkeypatch.setattr(sys, "argv", ["run-daily-update.py", "--force"])
+    notified = []
+    monkeypatch.setattr(rdu, "_notify", lambda message: notified.append(message))
+
+    rdu.main()
+
+    assert notified == ["Fetching updates from Jira… ☕", "Report updated."]
+
+
+def test_main_happy_path_notifies_fetching_then_result(tmp_path, monkeypatch):
+    # Plain successful run, no Drive, no VPN trouble — the baseline case
+    # that must keep working underneath all the edge-case handling above.
+    state_path = tmp_path / "roadmap-settings.local.json"
+    state_path.write_text(json.dumps({"update_time": "08:00", "update_timezone": "UTC"}))
+    monkeypatch.setattr(rdu, "STATE", state_path)
+    stamp_path = tmp_path / ".last-daily-run-utc"
+    monkeypatch.setattr(rdu, "STAMP", stamp_path)
+    monkeypatch.setattr(rdu, "_restore_jira_host_from_settings", lambda: None)
+    monkeypatch.setattr(rdu, "_restore_jira_host_from_external_config", lambda: None)
+    monkeypatch.setattr(rdu, "_ensure_openpyxl", lambda: True)
+    monkeypatch.setattr(
+        rdu, "_run_update",
+        lambda cmd: ("All quiet on the Jira front. Come back when someone actually does something.", False, None),
+    )
+    monkeypatch.setattr(sys, "argv", ["run-daily-update.py"])
+    notified = []
+    monkeypatch.setattr(rdu, "_notify", lambda message: notified.append(message))
+
+    rdu.main()
+
+    assert notified == [
+        "Fetching updates from Jira… ☕",
+        "All quiet on the Jira front. Come back when someone actually does something.",
+    ]
+
+
+def test_main_vpn_retry_loop_succeeds_once_vpn_reconnects(tmp_path, monkeypatch):
+    # The retry-until-midnight loop: first attempt hits a VPN error, then
+    # _vpn_connected() reports back up, then the retried _run_update call
+    # succeeds. Uses a fake clock/sleep so this doesn't actually wait.
+    state_path = tmp_path / "roadmap-settings.local.json"
+    state_path.write_text(json.dumps({"update_time": "08:00", "update_timezone": "UTC"}))
+    monkeypatch.setattr(rdu, "STATE", state_path)
+    stamp_path = tmp_path / ".last-daily-run-utc"
+    monkeypatch.setattr(rdu, "STAMP", stamp_path)
+    monkeypatch.setattr(rdu, "_restore_jira_host_from_settings", lambda: None)
+    monkeypatch.setattr(rdu, "_restore_jira_host_from_external_config", lambda: None)
+    monkeypatch.setattr(rdu, "_ensure_openpyxl", lambda: True)
+    monkeypatch.setattr(rdu.time, "sleep", lambda seconds: None)
+
+    call_results = iter([
+        (None, True, None),              # initial attempt: VPN down
+        ("Report updated.", False, None),  # retry after VPN reconnects: succeeds
+    ])
+    monkeypatch.setattr(rdu, "_run_update", lambda cmd: next(call_results))
+    monkeypatch.setattr(rdu, "_vpn_connected", lambda: True)  # reconnected on first poll
+    monkeypatch.setattr(sys, "argv", ["run-daily-update.py"])
+    notified = []
+    monkeypatch.setattr(rdu, "_notify", lambda message: notified.append(message))
+
+    rdu.main()
+
+    assert notified == [
+        "Fetching updates from Jira… ☕",
+        "Can't reach Jira — check your VPN connection.",
+        "Fetching updates from Jira… ☕",
+        "Report updated.",
+    ]
+
+
+def test_main_vpn_retry_loop_gives_up_if_still_unreachable(tmp_path, monkeypatch):
+    state_path = tmp_path / "roadmap-settings.local.json"
+    state_path.write_text(json.dumps({"update_time": "08:00", "update_timezone": "UTC"}))
+    monkeypatch.setattr(rdu, "STATE", state_path)
+    stamp_path = tmp_path / ".last-daily-run-utc"
+    monkeypatch.setattr(rdu, "STAMP", stamp_path)
+    monkeypatch.setattr(rdu, "_restore_jira_host_from_settings", lambda: None)
+    monkeypatch.setattr(rdu, "_restore_jira_host_from_external_config", lambda: None)
+    monkeypatch.setattr(rdu, "_ensure_openpyxl", lambda: True)
+    monkeypatch.setattr(rdu.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(rdu, "_run_update", lambda cmd: (None, True, None))  # always VPN error
+    monkeypatch.setattr(rdu, "_vpn_connected", lambda: True)
+    monkeypatch.setattr(sys, "argv", ["run-daily-update.py"])
+    notified = []
+    monkeypatch.setattr(rdu, "_notify", lambda message: notified.append(message))
+
+    rdu.main()
+
+    assert notified[-1] == "Connected to VPN but can't reach Jira — try running manually."
+
+
 def test_main_appends_drive_sync_failure_note_to_notification(tmp_path, monkeypatch):
     # Regression: _sync_to_drive()'s failures only ever got logged to
     # /tmp/jira-report-launchd.log — a file nobody watches. The report
@@ -154,10 +287,9 @@ def test_main_appends_drive_sync_failure_note_to_notification(tmp_path, monkeypa
     monkeypatch.setattr(rdu, "_ensure_openpyxl", lambda: True)
     monkeypatch.setattr(rdu, "_run_update", lambda cmd: ("Report updated.", False, "report/roadmap 2026.xlsx"))
     monkeypatch.setattr(rdu, "_sync_to_drive", lambda output_path: False)
-    monkeypatch.setattr(rdu, "_drive_url", lambda: "")
     monkeypatch.setattr(sys, "argv", ["run-daily-update.py"])
     notified = []
-    monkeypatch.setattr(rdu, "_notify", lambda message, open_url="": notified.append(message))
+    monkeypatch.setattr(rdu, "_notify", lambda message: notified.append(message))
 
     rdu.main()
 
@@ -178,10 +310,9 @@ def test_main_does_not_append_drive_note_when_sync_skipped_intentionally(tmp_pat
     monkeypatch.setattr(rdu, "_ensure_openpyxl", lambda: True)
     monkeypatch.setattr(rdu, "_run_update", lambda cmd: ("Report updated.", False, "report/roadmap 2026.xlsx"))
     monkeypatch.setattr(rdu, "_sync_to_drive", lambda output_path: None)
-    monkeypatch.setattr(rdu, "_drive_url", lambda: "")
     monkeypatch.setattr(sys, "argv", ["run-daily-update.py"])
     notified = []
-    monkeypatch.setattr(rdu, "_notify", lambda message, open_url="": notified.append(message))
+    monkeypatch.setattr(rdu, "_notify", lambda message: notified.append(message))
 
     rdu.main()
 
@@ -201,12 +332,41 @@ def test_main_notifies_when_openpyxl_cannot_be_installed(tmp_path, monkeypatch):
     monkeypatch.setattr(rdu, "_ensure_openpyxl", lambda: False)
     monkeypatch.setattr(sys, "argv", ["run-daily-update.py"])
     notified = []
-    monkeypatch.setattr(rdu, "_notify", lambda message, open_url="": notified.append(message))
+    monkeypatch.setattr(rdu, "_notify", lambda message: notified.append(message))
 
     rdu.main()
 
     assert len(notified) == 1
     assert "openpyxl" in notified[0]
+
+
+def test_notify_always_spoofs_a_registered_sender(monkeypatch):
+    # Regression, confirmed live on a real machine: terminal-notifier's own
+    # identity (fr.julienxx.oss.terminal-notifier) has never been granted
+    # Notification Center permission, so a notification posted under it is
+    # silently dropped — exit code still 0, it just never displays. This
+    # used to only spoof -sender when there was no click-to-open URL;
+    # dropping that URL feature entirely (see below) means -sender must
+    # always be present or notifications silently stop appearing again.
+    captured_cmds = []
+    monkeypatch.setattr(
+        rdu.subprocess, "run",
+        lambda cmd, **kw: (captured_cmds.append(cmd) or MagicMock(returncode=0, stdout="", stderr="")),
+    )
+    monkeypatch.setattr(rdu.sys.stdout, "isatty", lambda: True)
+    rdu._notify("hello")
+    assert "-sender" in captured_cmds[0]
+    assert "com.apple.ScriptEditor2" in captured_cmds[0]
+
+
+def test_notify_no_longer_passes_open_url():
+    # Regression: -open combined with the spoofed -sender does display, but
+    # confirmed live it no longer opens the URL on click (sender spoofing
+    # breaks click-through), and without spoofing it never displays at all
+    # — no configuration makes -open actually work, so _notify() no longer
+    # accepts it at all instead of silently ignoring a dead parameter.
+    import inspect
+    assert "open_url" not in inspect.signature(rdu._notify).parameters
 
 
 def test_restore_jira_host_from_settings_when_env_unset(state_file, monkeypatch):

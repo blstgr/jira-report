@@ -1148,30 +1148,38 @@ def _run_targeted_edit(
                 google_client_secrets = find_google_client_secrets()
 
     elif section == "time":
-        default_au = "y" if auto_update else "n"
-        print(f"Automatic updates? (y/n) [{default_au}]:")
-        raw_au = input("→ New value / Enter to skip: ").strip().lower()
-        if raw_au in {"y", "yes"}:
-            auto_update = True
-        elif raw_au in {"n", "no"}:
-            auto_update = False
-        if not auto_update:
-            if sys.platform == "darwin":
-                subprocess.run(["bash", str(APP_DIR / "uninstall-launchd.sh")], cwd=ROOT, check=False)
-                print("✓ Automatic updates removed.")
-        else:
+        while True:
+            default_au = "y" if auto_update else "n"
+            print(f"Automatic updates? (y/n) [{default_au}]:")
+            raw_au = input("→ New value / /b to go back / Enter to skip: ").strip().lower()
+            if raw_au in BACK_COMMANDS:
+                break
+            if raw_au in {"y", "yes"}:
+                auto_update = True
+            elif raw_au in {"n", "no"}:
+                auto_update = False
+            if not auto_update:
+                if sys.platform == "darwin":
+                    subprocess.run(["bash", str(APP_DIR / "uninstall-launchd.sh")], cwd=ROOT, check=False)
+                    print("✓ Automatic updates removed.")
+                break
+
             print(f"Automatic daily update time (HH:MM in 24h){f' [{update_time}]' if update_time else ''}:")
-            raw_time = input("→ New time / Enter to skip: ").strip()
-            if raw_time and raw_time not in {"/back", "/b"}:
+            raw_time = input("→ New time / /b to go back / Enter to skip: ").strip()
+            if raw_time in BACK_COMMANDS:
+                continue
+            if raw_time:
                 parsed = parse_update_time(raw_time)
                 if parsed:
                     update_time = f"{parsed[0]:02d}:{parsed[1]:02d}"
                 else:
                     print("Please enter a time in HH:MM format, e.g. 09:00.")
-            print(f"Timezone (e.g. Europe/Kyiv, America/New_York, UTC){f' [{update_timezone}]' if update_timezone else ''}:")
-            raw_tz = input("→ New timezone / Enter to skip: ").strip()
-            if raw_tz and raw_tz not in {"/back", "/b"}:
-                update_timezone = raw_tz
+                    continue
+
+            if not update_timezone:
+                update_timezone = _detect_system_timezone()
+            print(f"Using this computer's timezone for the schedule: {update_timezone}")
+            break
 
     elif section == "status":
         print("Which Jira statuses count as done — no more active dev work you would like to track towards ETA?")
