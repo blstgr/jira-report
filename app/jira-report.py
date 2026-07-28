@@ -2675,7 +2675,7 @@ def main():
     feature_eta_dates = sanitize_feature_eta_dates(state.get("feature_eta_dates"))
     current_scope = scope_signature(include_values, exclude)
     previous_scope = state.get("_auto_generated", {}).get("last_generated_scope") or state.get("last_generated_scope")
-    if args.from_cache or args.update:
+    if args.from_cache:
         epic_name_field_ids = cached_field_ids(state, "epic_name_field_ids", ["customfield_10011"])
         eta_field_ids = cached_field_ids(state, "eta_field_ids", DEFAULT_ETA_FIELD_IDS)
         _cached_link = state.get("_auto_generated", {}).get("epic_link_field_id") or state.get("epic_link_field_id")
@@ -2687,9 +2687,25 @@ def main():
             raise
         except Exception:
             _detected_fields = []
-        epic_name_field_ids = detect_epic_name_field_ids(_detected_fields)
-        eta_field_ids = detect_eta_field_ids(_detected_fields)
+        # epic_link_field_id determines whether a child task gets associated
+        # with its epic AT ALL — a stale cached value here silently breaks
+        # that association with zero visible error (the epic+task JQL
+        # fetches still succeed, they just can't be attributed to any epic,
+        # so every epic ends up with 0 matched children). That's severe
+        # enough to always re-detect live rather than trust a cache, unlike
+        # epic_name_field_ids/eta_field_ids below, which only affect label/
+        # ETA preference — a stale value there is a minor inconvenience,
+        # not silent data loss. This is why --update's "found 3 epics" could
+        # print correctly while a genuinely new or renamed epic's tasks
+        # never showed up: the epics matched, their tasks just never made
+        # it past the (wrong) Epic Link field lookup.
         epic_link_field_id = detect_epic_link_field_id(_detected_fields)
+        if args.update:
+            epic_name_field_ids = cached_field_ids(state, "epic_name_field_ids", ["customfield_10011"])
+            eta_field_ids = cached_field_ids(state, "eta_field_ids", DEFAULT_ETA_FIELD_IDS)
+        else:
+            epic_name_field_ids = detect_epic_name_field_ids(_detected_fields)
+            eta_field_ids = detect_eta_field_ids(_detected_fields)
     # Rebuild `features` list from canonical keyword order + any eta/pace data,
     # so the saved file stays in the tidy one-keyword-per-entry format.
     # When a feature filter is active, include_values is a subset — merge
