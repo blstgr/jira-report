@@ -486,6 +486,37 @@ def test_fetch_epics_by_key_chunks_across_batch_size():
     assert len(calls) == 2  # more keys than EPIC_BATCH_SIZE -> 2 batches
 
 
+def test_pick_feature_label_prefers_more_specific_keyword_among_candidates():
+    summary = "Checkout Redesign: post-release: Increased load - fixes"
+    label = jr.pick_feature_label(
+        summary, summary,
+        ["checkout redesign", "checkout redesign: post-release", "Checkout Redesign: post-release: Increased load - fixes"],
+        "ABC-1",
+    )
+    assert label == "Checkout Redesign: post-release: Increased load - fixes"
+
+
+def test_pick_feature_label_regression_single_candidate_gives_wrong_label():
+    # Regression: --new-features (and the "resync" command built on it) used
+    # to call pick_feature_label() with ONLY the keyword being resynced as
+    # the sole candidate — so an epic always got labeled with exactly that
+    # keyword, even when a separately-configured, more specific keyword (the
+    # epic's own full name) existed and should have won, same as it would
+    # during a normal full report build. This documents the exact contract
+    # the fix depends on: pick_feature_label must be given the FULL
+    # configured keyword list, not a single keyword, to rank correctly.
+    summary = "Checkout Redesign: post-release: Increased load - fixes"
+    single_candidate_label = jr.pick_feature_label(summary, summary, ["checkout redesign: post-release"], "ABC-1")
+    assert single_candidate_label == "checkout redesign: post-release"  # the bug, preserved as documentation
+
+    full_list_label = jr.pick_feature_label(
+        summary, summary,
+        ["checkout redesign", "checkout redesign: post-release", "Checkout Redesign: post-release: Increased load - fixes"],
+        "ABC-1",
+    )
+    assert full_list_label == "Checkout Redesign: post-release: Increased load - fixes"  # the fix
+
+
 if __name__ == "__main__":
     import traceback
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

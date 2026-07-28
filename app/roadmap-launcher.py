@@ -1216,7 +1216,7 @@ def _run_targeted_edit(
     save_state(_state)
 
 
-def _resync_feature_flow(include_keywords, keyword=None):
+def _resync_feature_flow(include_keywords, keyword=None, local_only=None, drive_folder=None, google_client_secrets=None):
     """Move one existing keyword's epics' tasks into their own feature
     without touching anything else in the report — e.g. an epic that used
     to only match a generic catch-all keyword got renamed/re-scoped to
@@ -1302,6 +1302,7 @@ def _resync_feature_flow(include_keywords, keyword=None):
         else:
             print_line("Resync stopped. Please check the keyword and try again.")
         raise SystemExit(returncode)
+    _do_drive_upload(output, local_only, drive_folder, google_client_secrets)
     print_line(f"✓ '{resync_keyword}' resynced.")
 
 
@@ -1414,7 +1415,7 @@ def main():
             update_run = True
             stage = 999
         elif action == "resync":
-            _resync_feature_flow(include_keywords, filter_pattern)
+            _resync_feature_flow(include_keywords, filter_pattern, local_only, drive_folder, google_client_secrets)
             raise SystemExit(0)
         elif action == "new":
             fresh_run = True

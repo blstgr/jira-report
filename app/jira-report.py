@@ -2944,7 +2944,13 @@ def main():
                 for _e in _matched_epics:
                     _esummary = _e["fields"].get("summary", "")
                     _ename = get_epic_name(_e["fields"], epic_name_field_ids)
-                    _flabel = pick_feature_label(_esummary, _ename, [_nkwd], _e["key"])
+                    # Rank against the FULL configured keyword list, not just
+                    # _nkwd — otherwise an epic matching this keyword always
+                    # gets labeled with exactly this keyword, even when a
+                    # separately-configured, more specific keyword (e.g. the
+                    # epic's own full name) should rightfully win, same as it
+                    # would during a normal full report build.
+                    _flabel = pick_feature_label(_esummary, _ename, include_values, _e["key"])
                     _nf_epic_by_key[_e["key"]] = {"epic": _e, "feature_label": _flabel, "child_issues": []}
                 if not _nf_epic_by_key:
                     continue

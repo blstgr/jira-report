@@ -225,6 +225,38 @@ def test_resync_bare_shows_picker_and_runs_update_with_new_features(
     assert "--fresh" not in captured_cmds[0]
 
 
+def test_resync_uploads_to_drive_when_configured(
+    sandboxed_launcher_with_existing_settings, monkeypatch
+):
+    # Regression: resync built its own jira-report.py invocation from
+    # scratch and never called _do_drive_upload() at all — unlike the main
+    # update/new flow, a successful resync never synced the refreshed
+    # report to Drive even when Drive sync was fully configured.
+    launcher, settings_dir, captured_cmds = sandboxed_launcher_with_existing_settings
+    local_path = settings_dir / "roadmap-settings.local.json"
+    settings = json.loads(local_path.read_text())
+    settings["local_only"] = False
+    settings["drive_folder"] = "https://drive.google.com/drive/folders/abc"
+    settings["google_client_secrets"] = "app/google-oauth-client-secrets.json"
+    local_path.write_text(json.dumps(settings))
+
+    drive_calls = []
+    monkeypatch.setattr(launcher, "_do_drive_upload", lambda *a: drive_calls.append(a))
+    answers = ScriptedInput(["resync checkout redesign"])
+    monkeypatch.setattr(builtins, "input", answers)
+    monkeypatch.setattr(sys, "argv", ["roadmap-launcher.py"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        launcher.main()
+
+    assert exc_info.value.code == 0
+    assert len(drive_calls) == 1
+    _output, _local_only, _drive_folder, _google_client_secrets = drive_calls[0]
+    assert _local_only is False
+    assert _drive_folder == "https://drive.google.com/drive/folders/abc"
+    assert _google_client_secrets.endswith("app/google-oauth-client-secrets.json")
+
+
 def test_resync_with_keyword_skips_the_picker_entirely(
     sandboxed_launcher_with_existing_settings, monkeypatch
 ):
