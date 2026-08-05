@@ -54,8 +54,31 @@ def test_syncs_when_fully_configured(state_file, fake_drive_module):
         "report/roadmap 2026.xlsx",
         "https://drive.google.com/drive/folders/abc",
         "roadmap 2026.xlsx",
-        "app/google-oauth-client-secrets.json",
+        str(rdu.ROOT.parent / "app/google-oauth-client-secrets.json"),
     )
+
+
+def test_sync_resolves_client_secrets_relative_to_project_root_not_cwd(state_file, fake_drive_module, monkeypatch):
+    # Regression: this used to pass the raw relative string from settings
+    # straight through — worked fine interactively (CWD happened to already
+    # be the project root) but launchd's WorkingDirectory is the TCC-safe
+    # wrapper dir, not the project root, so the relative path silently
+    # failed to open with "No such file or directory" on every scheduled
+    # run, only ever surfacing as "Drive sync failed — check the log."
+    monkeypatch.chdir("/tmp")
+    rdu.STATE = state_file()
+    assert rdu._sync_to_drive("report/roadmap 2026.xlsx") is True
+    called_secrets_path = fake_drive_module.call_args[0][3]
+    assert Path(called_secrets_path).is_absolute()
+    assert called_secrets_path == str(rdu.ROOT.parent / "app/google-oauth-client-secrets.json")
+
+
+def test_sync_leaves_an_already_absolute_client_secrets_path_untouched(state_file, fake_drive_module, tmp_path):
+    absolute_secrets = str(tmp_path / "custom-location" / "secrets.json")
+    rdu.STATE = state_file(google_client_secrets=absolute_secrets)
+    assert rdu._sync_to_drive("report/roadmap 2026.xlsx") is True
+    called_secrets_path = fake_drive_module.call_args[0][3]
+    assert called_secrets_path == absolute_secrets
 
 
 def test_skips_when_local_only(state_file, fake_drive_module):

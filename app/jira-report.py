@@ -102,12 +102,18 @@ def run_spinner(message, work_fn):
     thread = threading.Thread(target=animate, daemon=True)
     thread.start()
     try:
-        return work_fn()
-    finally:
+        result = work_fn()
+    except Exception:
         stop.set()
         thread.join(timeout=1)
-        sys.stdout.write(f"\r\x1b[2K✓ {message}\n")
+        sys.stdout.write(f"\r\x1b[2K✗ {message}\n")  # not "✓" — that claimed success even when work_fn raised
         sys.stdout.flush()
+        raise
+    stop.set()
+    thread.join(timeout=1)
+    sys.stdout.write(f"\r\x1b[2K✓ {message}\n")
+    sys.stdout.flush()
+    return result
 
 
 def run_progress_spinner(initial_message, work_fn):
@@ -132,12 +138,18 @@ def run_progress_spinner(initial_message, work_fn):
     thread = threading.Thread(target=animate, daemon=True)
     thread.start()
     try:
-        return work_fn(set_message)
-    finally:
+        result = work_fn(set_message)
+    except Exception:
         stop.set()
         thread.join(timeout=1)
-        sys.stdout.write(f"\r\x1b[2K✓ {state['message']}\n")
+        sys.stdout.write(f"\r\x1b[2K✗ {state['message']}\n")  # not "✓" — that claimed success even when work_fn raised
         sys.stdout.flush()
+        raise
+    stop.set()
+    thread.join(timeout=1)
+    sys.stdout.write(f"\r\x1b[2K✓ {state['message']}\n")
+    sys.stdout.flush()
+    return result
 
 
 def normalize_keyword(value):
@@ -311,6 +323,139 @@ def annotate_feature_status(rows):
             feature_status = ""
         row["Feature status"] = feature_status
     return rows
+
+
+def assign_rank_numbers(rows):
+    """Assigns each task a 1-based "Rank" number reflecting its position on
+    the Kanban board (Jira's own Rank field — a LexoRank string, sortable
+    correctly via plain string comparison), restarting at 1 for every
+    feature. Numbering covers done, in-progress, and open tasks together —
+    Jira doesn't clear Rank when a task is completed — so within a feature
+    you can tell which tasks were ranked ahead of which others regardless of
+    status. One number per underlying task, applied to every lifecycle
+    segment row of that task (a task that went in-progress/on-hold/done
+    still shows one consistent Rank across all its rows). Tasks with no
+    rank value available (not on a board with Rank, or — in --update mode —
+    an already-done task that wasn't re-fetched this run) get a blank Rank
+    rather than a stale or guessed number."""
+    feature_issue_ranks = {}
+    for row in rows:
+        feature = str(row.get("Feature") or "").strip()
+        issue_key = str(row.get("Link") or "").strip()
+        raw_rank = row.get("_rank")
+        if not feature or not issue_key or raw_rank is None:
+            continue
+        feature_issue_ranks.setdefault(feature, {}).setdefault(issue_key, raw_rank)
+
+    rank_by_feature_issue = {}
+    for feature, issue_ranks in feature_issue_ranks.items():
+        ordered_keys = sorted(issue_ranks, key=lambda k: issue_ranks[k])
+        for position, issue_key in enumerate(ordered_keys, 1):
+            rank_by_feature_issue[(feature, issue_key)] = position
+
+    for row in rows:
+        feature = str(row.get("Feature") or "").strip()
+        issue_key = str(row.get("Link") or "").strip()
+        row["Rank"] = rank_by_feature_issue.get((feature, issue_key), "")
+    return rows
+
+
+OVERDUE_LABEL_RE = re.compile(r"^(\d+)d-overdue$")
+OVERDUE_BUCKET_LABELS = {"overdue-orange", "overdue-red"}
+
+
+def _is_overdue_related_label(label):
+    return bool(OVERDUE_LABEL_RE.match(label)) or label in OVERDUE_BUCKET_LABELS
+
+
+def _overdue_bucket(overdue_days):
+    return "overdue-orange" if overdue_days == 2 else "overdue-red"
+
+
+def compute_overdue_labels(days_in_work, eta):
+    """Returns the desired set of overdue-related labels for a task: the
+    precise "Nd-overdue" value plus a coarse "overdue-orange" (exactly 2
+    days over)/"overdue-red" (3+ days over) bucket a Jira board's Card
+    Colors setting can actually use — Card Colors needs a small fixed set
+    of values to map colors to, not an open-ended "2d, 3d, 4d..." range.
+    Empty set if under 2 days over (or the data isn't available)."""
+    if days_in_work in ("", None) or eta in ("", None):
+        return set()
+    try:
+        overdue = int(round(float(days_in_work) - float(eta)))
+    except (TypeError, ValueError):
+        return set()
+    if overdue < 2:
+        return set()
+    return {f"{overdue}d-overdue", _overdue_bucket(overdue)}
+
+
+def sync_overdue_label(current_labels, status, days_in_work, eta):
+    """Given a task's actual current Jira labels and its Status/Days in
+    Work/ETA, returns (labels_to_add, labels_to_remove) needed to bring
+    them in sync. Once a task is "done", its precise "Nd-overdue" value is
+    permanent — never recalculated or removed again, even if it later gets
+    edited/reopened/re-ETA'd. The coarse orange/red bucket is always
+    derived from that same frozen number though, not recomputed fresh —
+    so introducing (or fixing) the bucket labels later can still backfill
+    them onto already-done, already-labeled tasks without ever changing
+    the frozen precise value. A task that ISN'T done stays fully in sync
+    every run: added, updated, or removed as Days in Work/ETA change."""
+    existing_all = {l for l in (current_labels or []) if _is_overdue_related_label(l)}
+
+    if status == "done":
+        existing_precise = [l for l in (current_labels or []) if OVERDUE_LABEL_RE.match(l)]
+        if existing_precise:
+            frozen_days = int(OVERDUE_LABEL_RE.match(existing_precise[0]).group(1))
+            frozen_desired = {existing_precise[0], _overdue_bucket(frozen_days)}
+            return sorted(frozen_desired - existing_all), []  # never remove from a done task
+        desired = compute_overdue_labels(days_in_work, eta)
+        return (sorted(desired), []) if desired else ([], [])
+
+    desired = compute_overdue_labels(days_in_work, eta)
+    if desired == existing_all:
+        return [], []
+    return sorted(desired - existing_all), sorted(existing_all - desired)
+
+
+def sync_overdue_labels(rows):
+    """Walks every task's CURRENT row (one per Link — the same "latest
+    lifecycle segment" concept current_issue_row() already uses elsewhere),
+    decides what label change (if any) it needs via sync_overdue_label(),
+    and writes it to Jira. Returns the count of tasks actually changed, for
+    a one-line status message — most runs touch zero or a handful.
+
+    Skips any row where "_labels" is None — that means this task wasn't
+    actually refetched this run (plain --update splices an already-"done"
+    task through unchanged from the existing file, since it never refetches
+    done tasks), so its real current labels aren't known here. That's fine:
+    a done task's overdue label is permanent by design, so there's nothing
+    to update anyway — and re-sending an "add" for a label Jira already has
+    is a harmless no-op, but doing that for hundreds of untouched tasks
+    every single day was adding real minutes to every scheduled run for
+    zero effect. Freshly fetched rows (in progress/on hold/newly done this
+    run) always have real "_labels" data and get checked normally."""
+    by_key = {}
+    for row in rows:
+        key = str(row.get("Link") or "").strip()
+        if key:
+            by_key.setdefault(key, []).append(row)
+
+    changed = 0
+    for key, key_rows in by_key.items():
+        current = current_issue_row(key_rows)
+        if not current or current.get("_labels") is None:
+            continue
+        to_add, to_remove = sync_overdue_label(
+            current.get("_labels"), current.get("Status"),
+            current.get("Days in Work"), current.get("ETA"),
+        )
+        if not to_add and not to_remove:
+            continue
+        update_ops = [{"remove": l} for l in to_remove] + [{"add": l} for l in to_add]
+        if jput(f"{BASE}/issue/{key}", {"update": {"labels": update_ops}}, context=f"syncing overdue label on {key}"):
+            changed += 1
+    return changed
 
 
 def is_epic_key_keyword(value):
@@ -528,6 +673,31 @@ def jget(url, context=None):
     raise last_error
 
 
+def jput(url, payload, context=None):
+    """The one write path to Jira (everything else in this file is
+    read-only). Used only for label sync — see sync_overdue_labels()."""
+    try:
+        body = json.dumps(payload).encode()
+        req = urllib.request.Request(url, data=body, headers={**jira_headers(), "Content-Type": "application/json"}, method="PUT")
+        with urllib.request.urlopen(req, timeout=20) as r:
+            r.read()
+        return True
+    except urllib.error.HTTPError as exc:
+        if exc.code in {401, 403}:
+            raise JiraAuthError(f"Jira authentication failed with HTTP {exc.code}") from exc
+        say_debug(f"DEBUG jput failed: {exc}")
+        return False
+    except Exception as exc:
+        is_network, reason_text = classify_network_error(exc)
+        if is_network:
+            context_text = f" while {context}" if context else ""
+            raise JiraNetworkError(
+                f"Jira or VPN connection appears to have dropped{context_text}. Last error: {reason_text}."
+            ) from exc
+        say_debug(f"DEBUG jput failed: {exc}")
+        return False
+
+
 def fetch_all_search(jql, fields, expand=None, context=None, on_progress=None):
     start = 0
     items = []
@@ -733,6 +903,20 @@ def detect_epic_link_field_id(fields):
         field_id = field.get("id")
         name = (field.get("name") or "").strip()
         if field_id and name.lower() == "epic link":
+            return field_id
+    return None
+
+
+def detect_rank_field_id(fields):
+    """Jira's board-order field (LexoRank string, sorts correctly as plain
+    text). Older Jira Server/Data Center instances that migrated from
+    GreenHopper's numeric rank often keep a second, dead "Rank (Obsolete)"
+    field around — must match the name exactly, not by substring, or that
+    stale field wins instead of the real one."""
+    for field in fields:
+        field_id = field.get("id")
+        name = (field.get("name") or "").strip()
+        if field_id and name.lower() == "rank":
             return field_id
     return None
 
@@ -1022,7 +1206,7 @@ def resolve_project_path(path_value):
     return str(path)
 
 
-def issue_rows(issue, feature, epic_summary, epic_name, eta_field_ids, epic_key=None):
+def issue_rows(issue, feature, epic_summary, epic_name, eta_field_ids, epic_key=None, rank_field_id=None):
     fields = issue["fields"]
     issue_key = str(issue.get("key") or "").strip().upper()
     if PROJECT_KEYS and not any(issue_key.startswith(f"{pk}-") for pk in PROJECT_KEYS):
@@ -1035,6 +1219,8 @@ def issue_rows(issue, feature, epic_summary, epic_name, eta_field_ids, epic_key=
     issue_type = fields.get("issuetype", {}).get("name", "")
     status_now = norm_status(fields.get("status", {}).get("name", ""))
     eta = pick_eta(fields, eta_field_ids)
+    raw_rank = fields.get(rank_field_id) if rank_field_id else None
+    raw_labels = fields.get("labels") or []
     resolution_date = parse_date(fields.get("resolutiondate"))
     created_date = parse_date(fields.get("created"))
     events = extract_events(issue)
@@ -1259,6 +1445,8 @@ def issue_rows(issue, feature, epic_summary, epic_name, eta_field_ids, epic_key=
                 "Created date": created_date,
                 "Created week": iso_week(created_date),
                 "_seq": row.get("_seq", 0),
+                "_rank": raw_rank,
+                "_labels": raw_labels,
             }
         )
     if result:
@@ -1269,7 +1457,7 @@ def issue_rows(issue, feature, epic_summary, epic_name, eta_field_ids, epic_key=
     return result
 
 
-def epic_fallback_rows(epic, feature_label, epic_summary, epic_name, eta_field_ids):
+def epic_fallback_rows(epic, feature_label, epic_summary, epic_name, eta_field_ids, rank_field_id=None):
     """When an epic has no child tasks to break progress into, track the
     epic itself instead of letting it silently vanish from the report —
     fetch its own changelog and run it through issue_rows() exactly the way
@@ -1281,7 +1469,10 @@ def epic_fallback_rows(epic, feature_label, epic_summary, epic_name, eta_field_i
     epic_key = epic.get("key")
     if not epic_key:
         return []
-    fields = "summary,status,issuetype,created,resolutiondate," + ",".join(eta_field_ids)
+    field_list = ["summary", "status", "issuetype", "created", "resolutiondate", "labels"] + eta_field_ids
+    if rank_field_id:
+        field_list.append(rank_field_id)
+    fields = ",".join(field_list)
     try:
         full_epic = jget(
             f"{BASE}/issue/{epic_key}?fields={fields}&expand=changelog",
@@ -1289,7 +1480,7 @@ def epic_fallback_rows(epic, feature_label, epic_summary, epic_name, eta_field_i
         )
     except Exception:
         return []
-    return issue_rows(full_epic, feature_label, epic_summary, epic_name, eta_field_ids, epic_key=epic_key)
+    return issue_rows(full_epic, feature_label, epic_summary, epic_name, eta_field_ids, epic_key=epic_key, rank_field_id=rank_field_id)
 
 
 def build_xlsx(rows, out_path, expected_tasks_per_week=None, feature_eta_dates=None, report_date=None):
@@ -1299,6 +1490,7 @@ def build_xlsx(rows, out_path, expected_tasks_per_week=None, feature_eta_dates=N
     headers = [
         "Feature",
         "Substream",
+        "Rank",
         "Task type",
         "Task",
         "Status",
@@ -1317,6 +1509,7 @@ def build_xlsx(rows, out_path, expected_tasks_per_week=None, feature_eta_dates=N
     fixed_widths = {
         "Feature": pixels_to_excel_width(137),
         "Substream": pixels_to_excel_width(137),
+        "Rank": pixels_to_excel_width(50),
         "Task": pixels_to_excel_width(517),
     }
 
@@ -1342,7 +1535,7 @@ def build_xlsx(rows, out_path, expected_tasks_per_week=None, feature_eta_dates=N
     week_fill = PatternFill(fill_type="solid", fgColor="FF2EC67E")
     week_header_fill = PatternFill(fill_type="solid", fgColor="FFFFF59D")
 
-    all_headers = headers + ["Epic"] + week_headers
+    all_headers = headers + ["Epic", "RawRank"] + week_headers
     widths = {header: len(str(header)) for header in all_headers}
     current_week = report_date.isocalendar()[1]
     for col_idx, header in enumerate(all_headers, 1):
@@ -1378,7 +1571,7 @@ def build_xlsx(rows, out_path, expected_tasks_per_week=None, feature_eta_dates=N
                 cell.number_format = "dd.mmm.yy"
             elif header == "Created date":
                 cell.number_format = "dd.mmm.yy"
-            elif header in {"Done week", "Created week"}:
+            elif header in {"Done week", "Created week", "Rank"}:
                 cell.number_format = "0"
             elif header in {"ETA", "Days in Work"}:
                 set_numeric_format(cell, value)
@@ -1416,7 +1609,17 @@ def build_xlsx(rows, out_path, expected_tasks_per_week=None, feature_eta_dates=N
             epic_cell.hyperlink = epic_list_link(epic_keys)
             epic_cell.font = link_font
 
-        for offset, week in enumerate(week_headers, len(headers) + 2):
+        # Raw Jira Rank string (LexoRank), hidden — "Rank" (the visible
+        # column) is the number users see; this is what lets a later
+        # --update run recompute Rank for a task it doesn't refetch (e.g.
+        # one already done) instead of losing its number, since the raw
+        # value round-trips through this column rather than only ever
+        # living in memory for the run that fetched it.
+        raw_rank_col_idx = len(headers) + 2
+        raw_rank_cell = sheet.cell(row=row_idx, column=raw_rank_col_idx, value=row.get("_rank") or None)
+        raw_rank_cell.font = base_font
+
+        for offset, week in enumerate(week_headers, len(headers) + 3):
             cell = sheet.cell(row=row_idx, column=offset, value=None)
             cell.font = base_font
             cell.alignment = Alignment(horizontal="left", vertical="top")
@@ -1429,13 +1632,17 @@ def build_xlsx(rows, out_path, expected_tasks_per_week=None, feature_eta_dates=N
     sheet.auto_filter.filterColumn = []
     sheet.auto_filter.filterColumn.append(FilterColumn(colId=feature_status_col_idx, filters=Filters(blank=True)))
     for col_idx, header in enumerate(all_headers, 1):
+        column_letter = sheet.cell(row=1, column=col_idx).column_letter
+        if header == "RawRank":
+            sheet.column_dimensions[column_letter].hidden = True
+            continue
         if header == "Epic":
             width = widths[header] + 1
         elif header in week_headers:
             width = pixels_to_excel_width(42)
         else:
             width = fixed_widths.get(header, max(widths[header] + 2, 10))
-        sheet.column_dimensions[sheet.cell(row=1, column=col_idx).column_letter].width = width
+        sheet.column_dimensions[column_letter].width = width
 
     auto_fit_row_heights(sheet, 1, len(rows) + 1, min_height=14, line_height=14)
 
@@ -2536,6 +2743,7 @@ def normalize_existing_rows(existing_rows):
                 "Created date": row.get("Created date").date() if isinstance(row.get("Created date"), dt.datetime) else (row.get("Created date") if isinstance(row.get("Created date"), dt.date) else parse_date(row.get("Created date", ""))),
                 "Created week": row.get("Created week", ""),
                 "Feature status": row.get("Feature status", ""),
+                "_rank": row.get("RawRank") or None,
             }
         )
     return rows
@@ -2565,7 +2773,15 @@ def merge_rows(existing_rows, fresh_rows):
             continue
         seen.add(row_id)
         if row["Status"] in {"done", "rejected"} and row_id in preserved_map:
-            merged.append(preserved_map[row_id])
+            # Rank does round-trip through the persisted "RawRank" column
+            # now (see normalize_existing_rows), so the preserved row
+            # usually already has "_rank" — but the row just freshly
+            # fetched from Jira is the more current value for the identical
+            # task, so prefer it when available rather than trusting a
+            # possibly stale persisted one.
+            preserved_row = preserved_map[row_id]
+            preserved_row["_rank"] = row.get("_rank") or preserved_row.get("_rank")
+            merged.append(preserved_row)
         else:
             merged.append(row)
     return merged
@@ -2703,6 +2919,8 @@ def main():
         eta_field_ids = cached_field_ids(state, "eta_field_ids", DEFAULT_ETA_FIELD_IDS)
         _cached_link = state.get("_auto_generated", {}).get("epic_link_field_id") or state.get("epic_link_field_id")
         epic_link_field_id = str(_cached_link) if _cached_link else "customfield_10014"
+        _cached_rank = state.get("_auto_generated", {}).get("rank_field_id")
+        rank_field_id = str(_cached_rank) if _cached_rank else None
     else:
         try:
             _detected_fields = run_spinner("Detecting your Jira field configuration...", detect_jira_fields)
@@ -2732,8 +2950,11 @@ def main():
         epic_name_field_ids = detect_epic_name_field_ids(_detected_fields)
         if args.update:
             eta_field_ids = cached_field_ids(state, "eta_field_ids", DEFAULT_ETA_FIELD_IDS)
+            _cached_rank = state.get("_auto_generated", {}).get("rank_field_id")
+            rank_field_id = str(_cached_rank) if _cached_rank else detect_rank_field_id(_detected_fields)
         else:
             eta_field_ids = detect_eta_field_ids(_detected_fields)
+            rank_field_id = detect_rank_field_id(_detected_fields)
     # Rebuild `features` list from canonical keyword order + any eta/pace data,
     # so the saved file stays in the tidy one-keyword-per-entry format.
     # When a feature filter is active, include_values is a subset — merge
@@ -2756,7 +2977,20 @@ def main():
             features_out.append(updated_entries.get(kw, orig))
     else:
         features_out = list(updated_entries.values())
-    state = {
+    # Update the state dict in place rather than replacing it outright —
+    # this used to construct a brand-new dict from scratch, which silently
+    # dropped any key this function doesn't itself manage (done_statuses,
+    # auto_update, jira_host, anything roadmap-launcher.py/run-daily-update.py
+    # add) on every single run, including the real daily automation (it
+    # shells out to this exact --update path). Both happened to still work
+    # afterward only because their code-level fallback defaults matched
+    # what was lost — a future custom done_statuses override wouldn't be so
+    # lucky. Only the specific legacy flat keys being migrated into the new
+    # "features" list get removed; everything else this script doesn't
+    # recognize is preserved untouched.
+    for _legacy_key in ("include", "expected_tasks_per_week", "feature_eta_dates"):
+        state.pop(_legacy_key, None)
+    state.update({
         "features": features_out,
         "exclude": exclude,
         "project_keys": PROJECT_KEYS,
@@ -2770,9 +3004,10 @@ def main():
             "epic_name_field_ids": epic_name_field_ids,
             "eta_field_ids": eta_field_ids,
             "epic_link_field_id": epic_link_field_id,
+            "rank_field_id": rank_field_id,
             "last_generated_scope": previous_scope,
         },
-    }
+    })
     with open(args.state, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2)
 
@@ -2801,6 +3036,14 @@ def main():
         update_existing = []
         rows_by_key = {}
         scope_dropped_count = 0
+        # resync ("--update --new-features <keyword>") re-fetches every task
+        # under the matched epic(s) regardless of status anyway (see below) —
+        # running the ordinary report-wide status-refresh on TOP of that
+        # scans every not-done task across the ENTIRE report a second time
+        # for no benefit, and gets slower every time (someone resyncing many
+        # features one at a time pays this full-report cost on every single
+        # run). Skip it whenever --new-features is doing the refreshing.
+        _has_new_features = bool([k.strip() for k in (args.new_features or "").split(",") if k.strip()])
 
         def _scan_existing(_set_msg):
             nonlocal scope_dropped_count
@@ -2850,6 +3093,10 @@ def main():
                 if _k:
                     rows_by_key.setdefault(_k, []).append(_row)
 
+            if _has_new_features:
+                _set_msg("Scanning tasks 100%...")
+                return
+
             if args.feature_filter:
                 _needle = normalize_keyword(args.feature_filter)
                 if args.feature_filter_all:
@@ -2896,9 +3143,10 @@ def main():
                 _fetched_issues = [_cache_by_key[_k] for _k in keys_to_refresh if _k in _cache_by_key]
                 say_done(f"Loaded {len(_fetched_issues)} task(s) from cache (dev mode).")
             else:
-                _task_fields = ",".join(
-                    ["summary", "status", "issuetype", "resolutiondate", "created", "project"] + eta_field_ids
-                )
+                _update_task_fields = ["summary", "status", "issuetype", "resolutiondate", "created", "project", "labels"] + eta_field_ids
+                if rank_field_id:
+                    _update_task_fields.append(rank_field_id)
+                _task_fields = ",".join(_update_task_fields)
                 _fetched_issues = []
                 def _do_fetch(_set_msg):
                     _total = len(keys_to_refresh)
@@ -2924,7 +3172,7 @@ def main():
                 _feature = str(_first.get("Feature") or "")
                 _epic_key = str(_first.get("Epic") or "")
                 _substream = str(_first.get("Substream") or "")
-                _new_rows = issue_rows(_issue, _feature, "", "", eta_field_ids, _epic_key)
+                _new_rows = issue_rows(_issue, _feature, "", "", eta_field_ids, _epic_key, rank_field_id=rank_field_id)
                 for _r in _new_rows:
                     if not _r.get("Substream"):
                         _r["Substream"] = _substream
@@ -2962,9 +3210,11 @@ def main():
         _new_feature_kwds = [k.strip() for k in (args.new_features or "").split(",") if k.strip()]
         if _new_feature_kwds:
             _epic_fields = ",".join(["summary", "status", "issuetype", "project"] + epic_name_field_ids)
-            _task_fields = ["summary", "status", "issuetype", "created", "updated", "resolutiondate"] + eta_field_ids
+            _task_fields = ["summary", "status", "issuetype", "created", "updated", "resolutiondate", "labels"] + eta_field_ids
             if epic_link_field_id:
                 _task_fields.append(epic_link_field_id)
+            if rank_field_id:
+                _task_fields.append(rank_field_id)
             _existing_keys = {str(_r.get("Link") or "").strip() for _r in update_existing}
             _existing_feature_by_key = {}
             for _r in update_existing:
@@ -2999,6 +3249,7 @@ def main():
                 if not _nf_epic_by_key:
                     continue
                 _nf_epic_keys = list(_nf_epic_by_key.keys())
+                _nf_total_children = 0
                 for _nf_batch in chunked(_nf_epic_keys, EPIC_BATCH_SIZE):
                     _epic_clause = " OR ".join(f'"Epic Link" = {_ek}' for _ek in _nf_batch)
                     _child_issues = fetch_all_search(
@@ -3007,21 +3258,28 @@ def main():
                         expand="changelog",
                         context=f"collecting tasks for new feature '{_nkwd}'",
                     )
+                    _nf_total_children += len(_child_issues)
                     for _ci in _child_issues:
                         _lev = _ci["fields"].get(epic_link_field_id) if epic_link_field_id else None
                         _lek = (_lev.get("key") or _lev.get("id") or "" if isinstance(_lev, dict) else str(_lev or "")).strip()
                         if _lek in _nf_epic_by_key:
                             _nf_epic_by_key[_lek]["child_issues"].append(_ci)
+                say_done(f"Found {_nf_total_children} task(s) for '{_nkwd}' — updating report...")
                 def _relabel_or_add(_row_key, _rows_for_key, _label):
                     _existing_feature = _existing_feature_by_key.get(_row_key)
-                    if _existing_feature == _label:
-                        return  # already correctly present, skip duplicate
                     if _existing_feature is not None:
-                        # Present under a DIFFERENT (now-stale) feature —
-                        # e.g. an epic that used to only match a generic
-                        # catch-all keyword got renamed/re-scoped to match
-                        # this more specific one. Strip the old rows so it
-                        # doesn't end up duplicated under two features.
+                        # Whether this task was already correctly placed or
+                        # sitting under a different (now-stale) feature, its
+                        # existing rows are always stale in one respect:
+                        # they predate this fetch, so fields detected/added
+                        # after the report was first built (e.g. the Rank
+                        # column's data) were never captured for them. Always replace
+                        # with the freshly-fetched rows rather than skipping
+                        # "already correctly present" tasks — resync is the
+                        # one path guaranteed to refetch every task under a
+                        # matched epic regardless of status, so it's the
+                        # only chance to backfill fields like this without a
+                        # full rebuild.
                         update_existing[:] = [
                             _r for _r in update_existing if str(_r.get("Link") or "").strip() != _row_key
                         ]
@@ -3038,25 +3296,28 @@ def main():
                     if not _nf_entry["child_issues"]:
                         # No tasks to break progress into — track the epic
                         # itself instead of it silently vanishing.
-                        _fallback_rows = epic_fallback_rows(_nf_epic, _nf_label, _nf_epic_summary, _nf_epic_name, eta_field_ids)
+                        _fallback_rows = epic_fallback_rows(_nf_epic, _nf_label, _nf_epic_summary, _nf_epic_name, eta_field_ids, rank_field_id=rank_field_id)
                         _fallback_rows = [_r for _r in _fallback_rows if row_belongs_in_current_report_year(_r, TODAY.year)]
                         if _fallback_rows:
                             _relabel_or_add(_nf_epic["key"], _fallback_rows, _nf_label)
                         continue
                     for _ci in _nf_entry["child_issues"]:
                         _ci_key = str(_ci.get("key") or "").strip()
-                        _nf_rows = issue_rows(_ci, _nf_label, _nf_epic_summary, _nf_epic_name, eta_field_ids, _nf_epic["key"])
+                        _nf_rows = issue_rows(_ci, _nf_label, _nf_epic_summary, _nf_epic_name, eta_field_ids, _nf_epic["key"], rank_field_id=rank_field_id)
                         _nf_rows = [_r for _r in _nf_rows if row_belongs_in_current_report_year(_r, TODAY.year)]
                         _relabel_or_add(_ci_key, _nf_rows, _nf_label)
 
         # Sort + annotate + write
         def _write_report(_set_msg):
             _set_msg("Updating report 25% — sorting rows...")
+            update_existing[:] = assign_rank_numbers(update_existing)
             def _to_date(_v):
                 if isinstance(_v, dt.datetime):
                     return _v.date()
                 return _v or dt.date.max
             update_existing.sort(key=lambda _r: (
+                (_r.get("Feature") or "").lower(),
+                _r.get("Rank") if _r.get("Rank") != "" else float("inf"),
                 0 if _r.get("Start") else 1 if _r.get("End") else 2,
                 _to_date(_r.get("Start")),
                 _to_date(_r.get("End")),
@@ -3075,6 +3336,10 @@ def main():
             _set_msg("Updating report 100%...")
         run_progress_spinner("Updating report 0%...", _write_report)
         say_done(f"Wrote {output_path} — {len(update_existing)} rows, updated at {dt.datetime.now().strftime('%-d %b %H:%M')}")
+        if not args.from_cache:
+            _overdue_changed = run_spinner("Syncing overdue labels...", lambda: sync_overdue_labels(update_existing))
+            if _overdue_changed:
+                say_done(f"Updated overdue labels on {_overdue_changed} task(s).")
         raise SystemExit(88)  # Tell launcher: update done, handle upload and schedule line
 
     def collect_tasks_from_jira(set_message):
@@ -3191,9 +3456,11 @@ def main():
             epic_by_key[epic["key"]] = entry
 
         epic_keys = [entry["epic"]["key"] for entry in epic_entries]
-        task_fields = ["summary", "status", "issuetype", "created", "updated", "resolutiondate"] + eta_field_ids
+        task_fields = ["summary", "status", "issuetype", "created", "updated", "resolutiondate", "labels"] + eta_field_ids
         if epic_link_field_id:
             task_fields.append(epic_link_field_id)
+        if rank_field_id:
+            task_fields.append(rank_field_id)
 
         total_batches = max(1, math.ceil(len(epic_keys) / EPIC_BATCH_SIZE))
         say_debug(f"DEBUG epic entries: {len(epic_entries)}")
@@ -3250,12 +3517,12 @@ def main():
             )
             epic_rows = []
             for issue in child_issues:
-                issue_task_rows = issue_rows(issue, entry["feature_label"], epic_summary, epic_name, eta_field_ids, epic["key"])
+                issue_task_rows = issue_rows(issue, entry["feature_label"], epic_summary, epic_name, eta_field_ids, epic["key"], rank_field_id=rank_field_id)
                 if not issue_task_rows:
                     continue
                 epic_rows.extend(issue_task_rows)
             if not child_issues:
-                epic_rows = epic_fallback_rows(epic, entry["feature_label"], epic_summary, epic_name, eta_field_ids)
+                epic_rows = epic_fallback_rows(epic, entry["feature_label"], epic_summary, epic_name, eta_field_ids, rank_field_id=rank_field_id)
             feature_rows = [row for row in epic_rows if row_belongs_in_current_report_year(row, TODAY.year)]
             feature_has_current_year_activity = rows_have_feature_report_activity(feature_rows, TODAY.year)
             if feature_has_current_year_activity:
@@ -3313,7 +3580,7 @@ def main():
                 + ", ".join(f"{key}={value}" for key, value in sorted(project_counts.items()))
             )
             for issue in entry.get("child_issues", []):
-                issue_task_rows = issue_rows(issue, feature_label, epic_summary, epic_name, eta_field_ids, epic["key"])
+                issue_task_rows = issue_rows(issue, feature_label, epic_summary, epic_name, eta_field_ids, epic["key"], rank_field_id=rank_field_id)
                 if not issue_task_rows:
                     continue
                 epic_rows.extend(issue_task_rows)
@@ -3344,11 +3611,14 @@ def main():
     def sort_rows():
         nonlocal rows
         rows = merge_rows(existing, rows)
+        rows = assign_rank_numbers(rows)
         def _to_date(v):
             if isinstance(v, dt.datetime):
                 return v.date()
             return v or dt.date.max
         rows.sort(key=lambda r: (
+            (r["Feature"] or "").lower(),
+            r["Rank"] if r["Rank"] != "" else float("inf"),
             0 if r["Start"] else 1 if r["End"] else 2,
             _to_date(r["Start"]),
             _to_date(r["End"]),
@@ -3369,6 +3639,11 @@ def main():
     run_spinner("Sorting rows for report...", sort_rows)
     run_spinner("Writing the report file...", write_file)
     say_done(f"Wrote {output_path} with {len(rows)} rows")
+
+    if not args.from_cache:
+        _overdue_changed = run_spinner("Syncing overdue labels...", lambda: sync_overdue_labels(rows))
+        if _overdue_changed:
+            say_done(f"Updated overdue labels on {_overdue_changed} task(s).")
 
     if not args.from_cache:
         write_snapshot(

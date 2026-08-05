@@ -13,11 +13,13 @@ For example, keyword `Checkout Redesign` collects all of these epics at once:
 
 And produces rows like this in the tasks tab:
 
-| Feature | Substream | Task type | Task | Status | Start | End | Done week | ETA | Days in work | Δ ETA |
-|---|---|---|---|---|---|---|---|---|---|---|
-| Checkout Redesign | Scope definition | Task | Backend: Refactor cart schema | done | 03.Mar.26 | 14.Mar.26 | 11 | 16.Mar.26 | 8 | −2 |
-| Checkout Redesign | Payments | Task | Payments API: Multi-currency support | in progress | 10.Mar.26 | | 12 | 16.Mar.26 | 14 | +5 |
-| Checkout Redesign | Mobile polish | Task | Define mobile checkout flow | | | | | 16.Mar.26 | | |
+| Feature | Substream | Rank | Task type | Task | Status | Start | End | Done week | ETA | Days in work | Δ ETA |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| Checkout Redesign | Scope definition | 1 | Task | Backend: Refactor cart schema | done | 03.Mar.26 | 14.Mar.26 | 11 | 16.Mar.26 | 8 | −2 |
+| Checkout Redesign | Payments | 2 | Task | Payments API: Multi-currency support | in progress | 10.Mar.26 | | 12 | 16.Mar.26 | 14 | +5 |
+| Checkout Redesign | Mobile polish | 3 | Task | Define mobile checkout flow | | | | | 16.Mar.26 | | |
+
+**Rank** mirrors each task's position on its Jira Kanban board (Jira's own `Rank` field), renumbered 1, 2, 3… within each feature — done, in-progress, and open tasks all share one sequence, so you can tell a done task was ranked ahead of an open one just from the number. Blank means no board rank was available for that task (e.g. it was never placed on a board with ranking, or a plain `update` run didn't need to re-fetch an already-done task). The tasks tab sorts by Feature then Rank by default.
 
 > To track delivery date for an epic independently, use the full epic name as a separate keyword: `Checkout Redesign: Payments`.
 

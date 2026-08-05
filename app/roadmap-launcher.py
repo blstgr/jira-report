@@ -985,12 +985,18 @@ def run_spinner(message, work_fn):
     thread = threading.Thread(target=animate, daemon=True)
     thread.start()
     try:
-        return work_fn()
-    finally:
+        result = work_fn()
+    except Exception:
         stop.set()
         thread.join(timeout=1)
-        sys.stdout.write(f"\r\x1b[2K✓ {message}\n")
+        sys.stdout.write(f"\r\x1b[2K✗ {message}\n")  # not "✓" — that claimed success even when work_fn raised
         sys.stdout.flush()
+        raise
+    stop.set()
+    thread.join(timeout=1)
+    sys.stdout.write(f"\r\x1b[2K✓ {message}\n")
+    sys.stdout.flush()
+    return result
 
 
 def load_oauth_setup_steps():

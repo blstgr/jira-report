@@ -334,6 +334,249 @@ def test_tasks_freezes_header_row_and_column_a(tmp_path):
     assert wb["tasks"].freeze_panes == "B2"
 
 
+# ── Tasks: Rank column sits between Substream and Task type ────────────────
+
+def test_tasks_rank_column_sits_between_substream_and_task_type(tmp_path):
+    row = _row("F1", "A-1", "done", start=dt.date(2026, 1, 5), end=dt.date(2026, 1, 9))
+    row["Rank"] = 2
+    out_path = tmp_path / "report.xlsx"
+    jr.build_xlsx([row], str(out_path), report_date=REPORT_DATE)
+    sheet = openpyxl.load_workbook(str(out_path))["tasks"]
+    headers = [sheet.cell(1, c).value for c in range(1, sheet.max_column + 1)]
+    assert headers.index("Rank") == headers.index("Substream") + 1
+    assert headers.index("Task type") == headers.index("Rank") + 1
+    rank_col = headers.index("Rank") + 1
+    assert sheet.cell(2, rank_col).value == 2
+
+
+def test_tasks_rank_blank_when_row_has_no_rank_value(tmp_path):
+    # A row that never went through assign_rank_numbers() (e.g. an older
+    # call site, or a row with no board rank data) must not crash or show a
+    # placeholder — just blank, same as "Feature status" already does.
+    row = _row("F1", "A-1", "done", start=dt.date(2026, 1, 5), end=dt.date(2026, 1, 9))
+    out_path = tmp_path / "report.xlsx"
+    jr.build_xlsx([row], str(out_path), report_date=REPORT_DATE)
+    sheet = openpyxl.load_workbook(str(out_path))["tasks"]
+    headers = [sheet.cell(1, c).value for c in range(1, sheet.max_column + 1)]
+    rank_col = headers.index("Rank") + 1
+    assert sheet.cell(2, rank_col).value is None
+
+
+def test_tasks_raw_rank_column_is_written_and_hidden(tmp_path):
+    # Raw Jira Rank (LexoRank string) must round-trip through the file
+    # itself (not just live in memory for the run that fetched it) so a
+    # later --update run, which never refetches an already-done task, can
+    # still recompute that task's visible Rank number correctly instead of
+    # losing it — see test_jira_report.py's
+    # test_update_splice_no_longer_wipes_rank_for_an_unrefreshed_done_task.
+    # Kept as a separate "RawRank" column from the visible "Rank" number —
+    # it's a real value users don't need to see, hence hidden.
+    row = _row("F1", "A-1", "done", start=dt.date(2026, 1, 5), end=dt.date(2026, 1, 9))
+    row["_rank"] = "1|i0001:"
+    out_path = tmp_path / "report.xlsx"
+    jr.build_xlsx([row], str(out_path), report_date=REPORT_DATE)
+    sheet = openpyxl.load_workbook(str(out_path))["tasks"]
+    headers = [sheet.cell(1, c).value for c in range(1, sheet.max_column + 1)]
+    raw_rank_col = headers.index("RawRank") + 1
+    assert sheet.cell(2, raw_rank_col).value == "1|i0001:"
+    raw_rank_letter = sheet.cell(1, raw_rank_col).column_letter
+    assert sheet.column_dimensions[raw_rank_letter].hidden is True
+
+
+# ── main() end-to-end: resync/update must never leave tasks without Rank ──
+#
+# These drive the real main() with a mocked jget (the one Jira network choke
+# point — see jget()/fetch_all_search()), an on-disk "existing report" xlsx,
+# and a throwaway state file. Regression coverage for two real bugs that
+# only exist at this level (not visible to any pure-function unit test):
+# resync silently skipping already-correctly-placed tasks (never refreshing
+# their Rank/title/anything), and resync running a wasteful, unrelated
+# report-wide status scan on top of its own epic-scoped fetch.
+
+import json
+import urllib.parse
+
+
+def _issue(key, fields):
+    return {"key": key, "fields": fields}
+
+
+def _make_jget_router(field_list, epics_by_key, epic_search_results, child_issues_by_epic):
+    """Fake for jr.jget dispatching on the JQL embedded in the URL — the
+    real shape fetch_all_search()/detect_jira_fields() build."""
+    calls = []
+
+    def _fake_jget(url, context=None):
+        calls.append(url)
+        if url.endswith("/field"):
+            return field_list
+        query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+        jql = query.get("jql", [""])[0]
+        if jql.startswith("key in ("):
+            keys = [k.strip() for k in jql[len("key in ("):-1].split(",")]
+            matched = [epics_by_key[k] for k in keys if k in epics_by_key]
+            return {"issues": matched, "total": len(matched)}  # total must match len(issues), or fetch_all_search's pagination loop spins forever
+        if "issuetype = Epic" in jql:
+            return {"issues": epic_search_results, "total": len(epic_search_results)}
+        if '"Epic Link" =' in jql:
+            issues = []
+            for epic_key, epic_issues in child_issues_by_epic.items():
+                if f'"Epic Link" = {epic_key}' in jql:
+                    issues.extend(epic_issues)
+            return {"issues": issues, "total": len(issues)}
+        if jql.startswith("issue in ("):
+            return {"issues": [], "total": 0}  # the report-wide status scan, if it runs at all
+        raise AssertionError(f"unexpected jql in test: {jql!r}")
+
+    return _fake_jget, calls
+
+
+_FIELD_LIST = [
+    {"id": "customfield_10014", "name": "Epic Link"},
+    {"id": "customfield_10011", "name": "Epic Name"},
+    {"id": "customfield_10100", "name": "Rank"},
+]
+
+
+def _write_state(tmp_path, output_path, **extra):
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps({
+        "features": [{"keyword": "Checkout Redesign"}],
+        "exclude": [],
+        "project_keys": [],
+        "output": str(output_path),
+        "local_only": True,
+        "_auto_generated": {},
+        **extra,
+    }))
+    return state_path
+
+
+def test_update_preserves_settings_keys_it_does_not_manage(tmp_path, monkeypatch):
+    # Regression: main()'s end-of-run state write used to construct a brand
+    # new dict from scratch instead of updating the loaded one in place,
+    # silently dropping any key this script doesn't itself manage
+    # (done_statuses, auto_update, or anything roadmap-launcher.py /
+    # run-daily-update.py store there) on every single run — including the
+    # real daily automation, since it shells out to this exact --update
+    # path. Caught live: a real settings file lost a custom done_statuses
+    # and its auto_update flag after nothing more than a normal --update.
+    monkeypatch.chdir(tmp_path)
+    existing_rows = [_row("Checkout Redesign", "TASK-1", "done", start=dt.date(2026, 1, 5), end=dt.date(2026, 1, 9))]
+    existing_rows[0]["Epic"] = "EPIC-1"
+    output_path = tmp_path / "existing-report.xlsx"
+    jr.build_xlsx(existing_rows, str(output_path), report_date=REPORT_DATE)
+
+    epic = _issue("EPIC-1", {"summary": "Checkout Redesign: core", "issuetype": {"name": "Epic"}, "project": {"key": "ABC"}})
+    fake_jget, _ = _make_jget_router(
+        field_list=_FIELD_LIST, epics_by_key={"EPIC-1": epic},
+        epic_search_results=[], child_issues_by_epic={},
+    )
+    monkeypatch.setattr(jr, "jget", fake_jget)
+    monkeypatch.setattr(jr, "jira_headers", lambda: {})
+
+    state_path = _write_state(
+        tmp_path, output_path,
+        done_statuses=["Shipped", "Verified"],  # deliberately non-default, so this can't pass by accident
+        auto_update=False,
+    )
+    monkeypatch.setattr(sys, "argv", [
+        "jira-report.py", "--state", str(state_path), "--output", str(output_path), "--update",
+    ])
+
+    try:
+        jr.main()
+    except SystemExit:
+        pass
+
+    written = json.loads(state_path.read_text())
+    assert written["done_statuses"] == ["Shipped", "Verified"]
+    assert written["auto_update"] is False
+
+
+def test_resync_refreshes_already_placed_tasks_and_backfills_rank(tmp_path, monkeypatch):
+    # Regression: resync's _relabel_or_add() used to `return` early for a
+    # task already correctly placed under its feature — skipping the
+    # replacement entirely, so its title/status/Rank stayed frozen at
+    # whatever they were the last time it genuinely needed relabeling.
+    #
+    # Defense in depth: main() falls back to a CWD-relative default output
+    # path (report/roadmap {year}.xlsx) whenever --output isn't passed on
+    # argv exactly right — this happened while writing this test and it
+    # silently wrote to the real project's real report file. --output is
+    # passed explicitly below to prevent that, but chdir into tmp_path too
+    # so even a future mistake here can only ever touch a throwaway path.
+    monkeypatch.chdir(tmp_path)
+    existing_rows = [
+        _row("Checkout Redesign", "TASK-1", "done", start=dt.date(2026, 1, 5), end=dt.date(2026, 1, 9)),
+        _row("Checkout Redesign", "TASK-2", "in progress", start=dt.date(2026, 1, 10)),
+    ]
+    for row in existing_rows:
+        row["Epic"] = "EPIC-1"
+    existing_rows[0]["Task"] = "old title for TASK-1"
+    existing_rows[0]["_rank"] = "1|i0001:"
+    existing_rows[1]["_rank"] = "1|i0002:"
+    existing_rows = jr.assign_rank_numbers(existing_rows)
+    assert existing_rows[0]["Rank"] == 1 and existing_rows[1]["Rank"] == 2  # sanity on the fixture itself
+
+    output_path = tmp_path / "existing-report.xlsx"
+    jr.build_xlsx(existing_rows, str(output_path), report_date=REPORT_DATE)
+
+    epic = _issue("EPIC-1", {"summary": "Checkout Redesign: core", "issuetype": {"name": "Epic"}, "project": {"key": "ABC"}})
+    fresh_task_1 = _issue("TASK-1", {
+        "summary": "new title for TASK-1", "issuetype": {"name": "Task"},
+        "status": {"name": "Done"}, "created": "2026-01-05T00:00:00.000-0000",
+        "resolutiondate": "2026-01-09T00:00:00.000-0000",
+        "customfield_10014": {"key": "EPIC-1"}, "customfield_10100": "1|i0003:",
+    })
+    fresh_task_2 = _issue("TASK-2", {
+        "summary": "task TASK-2", "issuetype": {"name": "Task"},
+        "status": {"name": "In Progress"}, "created": "2026-01-10T00:00:00.000-0000",
+        "resolutiondate": None,
+        "customfield_10014": {"key": "EPIC-1"}, "customfield_10100": "1|i0002:",
+    })
+    fake_jget, calls = _make_jget_router(
+        field_list=_FIELD_LIST,
+        epics_by_key={"EPIC-1": epic},
+        epic_search_results=[epic],
+        child_issues_by_epic={"EPIC-1": [fresh_task_1, fresh_task_2]},
+    )
+    monkeypatch.setattr(jr, "jget", fake_jget)
+    monkeypatch.setattr(jr, "jira_headers", lambda: {})
+
+    state_path = _write_state(tmp_path, output_path)
+    monkeypatch.setattr(sys, "argv", [
+        # --output MUST be passed explicitly here, not just via the state
+        # file's "output" key — main() only honors state's "output" when
+        # args.output (the raw CLI flag) is also non-empty; omitting it
+        # silently redirects everything to the real default report path
+        # (report/roadmap {year}.xlsx in the CWD) instead of this tmp file.
+        "jira-report.py", "--state", str(state_path), "--output", str(output_path),
+        "--update", "--new-features", "Checkout Redesign",
+    ])
+
+    with pytest.raises(SystemExit):
+        jr.main()
+
+    result_sheet = openpyxl.load_workbook(str(output_path))["tasks"]
+    headers = [result_sheet.cell(1, c).value for c in range(1, result_sheet.max_column + 1)]
+    link_col = headers.index("Link") + 1
+    task_col = headers.index("Task") + 1
+    rank_col = headers.index("Rank") + 1
+    rows_by_link = {}
+    for r in range(2, result_sheet.max_row + 1):
+        link = result_sheet.cell(r, link_col).value
+        rows_by_link[link] = (result_sheet.cell(r, task_col).value, result_sheet.cell(r, rank_col).value)
+
+    assert rows_by_link["TASK-1"][0] == "new title for TASK-1"  # the fix: title actually refreshed
+    assert rows_by_link["TASK-1"][1] not in (None, "")  # every task must have Rank
+    assert rows_by_link["TASK-2"][1] not in (None, "")
+
+    assert not any(u.split("jql=")[-1].startswith("issue%20in%20") for u in calls), (
+        "resync must not also run the report-wide not-done status scan"
+    )
+
+
 # ── norm_status: done-status set is configurable, not hardcoded ────────────
 
 def test_norm_status_done_set_is_configurable():

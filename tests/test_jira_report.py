@@ -446,6 +446,326 @@ def test_detect_epic_name_field_ids_falls_back_to_default_when_nothing_matches()
     assert jr.detect_epic_name_field_ids([]) == ["customfield_10011"]
 
 
+def test_run_spinner_returns_work_fn_result_on_success():
+    assert jr.run_spinner("doing thing", lambda: 42) == 42
+
+
+def test_run_spinner_propagates_exception_on_failure():
+    # Regression: found while debugging a real Jira timeout — the spinner's
+    # cleanup used to print "✓ {message}" unconditionally in a `finally`
+    # block, so a FAILED call still showed a success checkmark right before
+    # the actual error text, which is actively misleading when diagnosing
+    # what went wrong.
+    def _boom():
+        raise jr.JiraNetworkError("dropped")
+    try:
+        jr.run_spinner("doing thing", _boom)
+        assert False, "expected JiraNetworkError to propagate"
+    except jr.JiraNetworkError:
+        pass
+
+
+def test_run_progress_spinner_returns_work_fn_result_on_success():
+    assert jr.run_progress_spinner("doing thing", lambda set_msg: 7) == 7
+
+
+def test_run_progress_spinner_propagates_exception_on_failure():
+    def _boom(set_msg):
+        raise jr.JiraNetworkError("dropped")
+    try:
+        jr.run_progress_spinner("doing thing", _boom)
+        assert False, "expected JiraNetworkError to propagate"
+    except jr.JiraNetworkError:
+        pass
+
+
+def test_detect_rank_field_id_matches_by_exact_name():
+    fields = [
+        {"id": "customfield_10004", "name": "Rank (Obsolete)"},
+        {"id": "customfield_10100", "name": "Rank"},
+    ]
+    assert jr.detect_rank_field_id(fields) == "customfield_10100"
+
+
+def test_detect_rank_field_id_does_not_match_obsolete_rank_by_substring():
+    # Regression risk: some Jira Server/Data Center instances keep a dead
+    # "Rank (Obsolete)" field around from an old GreenHopper migration — a
+    # substring match would pick it instead of the real, active Rank field.
+    fields = [{"id": "customfield_10004", "name": "Rank (Obsolete)"}]
+    assert jr.detect_rank_field_id(fields) is None
+
+
+def test_detect_rank_field_id_returns_none_when_not_found():
+    assert jr.detect_rank_field_id([]) is None
+
+
+def test_issue_rows_captures_raw_rank_when_field_id_given():
+    jr.PROJECT_KEYS = []
+    issue = _issue_with_events("ABC-5", [
+        _history("2024-03-01", "To Do", "In Progress", "1"),
+    ], current_status="In Progress", resolution=None)
+    issue["fields"]["customfield_10100"] = "1|hy9jpw:"
+    rows = jr.issue_rows(issue, "feat", "epic", "epic", [], rank_field_id="customfield_10100")
+    assert all(r["_rank"] == "1|hy9jpw:" for r in rows)
+
+
+def test_issue_rows_rank_is_none_without_rank_field_id():
+    jr.PROJECT_KEYS = []
+    issue = _issue_with_events("ABC-6", [
+        _history("2024-03-01", "To Do", "In Progress", "1"),
+    ], current_status="In Progress", resolution=None)
+    rows = jr.issue_rows(issue, "feat", "epic", "epic", [])
+    assert all(r["_rank"] is None for r in rows)
+
+
+def _row(feature, link, rank=None, status="", start=None, end=None, substream=""):
+    return {
+        "Feature": feature, "Link": link, "_rank": rank, "Status": status,
+        "Start": start, "End": end, "Substream": substream,
+    }
+
+
+def test_assign_rank_numbers_orders_by_rank_within_feature():
+    rows = [
+        _row("Checkout Redesign", "ABC-3", rank="1|i0003:"),
+        _row("Checkout Redesign", "ABC-1", rank="1|i0001:"),
+        _row("Checkout Redesign", "ABC-2", rank="1|i0002:"),
+    ]
+    result = jr.assign_rank_numbers(rows)
+    rank_by_key = {r["Link"]: r["Rank"] for r in result}
+    assert rank_by_key == {"ABC-1": 1, "ABC-2": 2, "ABC-3": 3}
+
+
+def test_assign_rank_numbers_restarts_at_one_per_feature():
+    rows = [
+        _row("Checkout Redesign", "ABC-1", rank="1|i0005:"),
+        _row("Payments", "XYZ-1", rank="1|i0001:"),
+    ]
+    result = jr.assign_rank_numbers(rows)
+    rank_by_key = {r["Link"]: r["Rank"] for r in result}
+    assert rank_by_key["ABC-1"] == 1  # not "later" just because rank sorts after XYZ-1's
+    assert rank_by_key["XYZ-1"] == 1
+
+
+def test_assign_rank_numbers_gives_all_segments_of_one_task_the_same_number():
+    # A task that went in-progress -> on-hold -> done produces multiple
+    # lifecycle rows sharing one Link — they must all show the same Rank,
+    # not consecutive different numbers.
+    rows = [
+        _row("Checkout Redesign", "ABC-1", rank="1|i0001:", status="on hold"),
+        _row("Checkout Redesign", "ABC-1", rank="1|i0001:", status="done"),
+        _row("Checkout Redesign", "ABC-2", rank="1|i0002:", status=""),
+    ]
+    result = jr.assign_rank_numbers(rows)
+    abc1_ranks = {r["Rank"] for r in result if r["Link"] == "ABC-1"}
+    assert abc1_ranks == {1}
+
+
+def test_assign_rank_numbers_blank_when_no_rank_available():
+    rows = [_row("Checkout Redesign", "ABC-1", rank=None)]
+    result = jr.assign_rank_numbers(rows)
+    assert result[0]["Rank"] == ""
+
+
+def test_assign_rank_numbers_done_and_open_tasks_share_one_sequence():
+    # Confirms the user-facing scenario directly: done tasks keep whatever
+    # board position they held, in-progress/open tasks continue the same
+    # numbering — not two separate sequences.
+    rows = [
+        _row("Checkout Redesign", f"DONE-{i}", rank=f"1|i000{i}:", status="done")
+        for i in range(1, 6)
+    ] + [
+        _row("Checkout Redesign", "PROG-1", rank="1|i0006:", status="in progress"),
+        _row("Checkout Redesign", "PROG-2", rank="1|i0007:", status="in progress"),
+        _row("Checkout Redesign", "OPEN-1", rank="1|i0008:", status=""),
+    ]
+    result = jr.assign_rank_numbers(rows)
+    rank_by_key = {r["Link"]: r["Rank"] for r in result}
+    assert [rank_by_key[f"DONE-{i}"] for i in range(1, 6)] == [1, 2, 3, 4, 5]
+    assert rank_by_key["PROG-1"] == 6
+    assert rank_by_key["PROG-2"] == 7
+    assert rank_by_key["OPEN-1"] == 8
+
+
+def test_merge_rows_carries_fresh_rank_onto_preserved_done_row():
+    # Regression: a preserved done/rejected row is the OLD dict (read back
+    # from the xlsx, which never had "_rank" persisted) — without carrying
+    # the fresh fetch's rank over, an identity-matched preserved row would
+    # silently lose its Rank number even on a full rebuild where rank data
+    # was readily available.
+    existing = [_row("Checkout Redesign", "ABC-1", rank=None, status="done", substream="")]
+    fresh = [_row("Checkout Redesign", "ABC-1", rank="1|i0001:", status="done", substream="")]
+    for row in existing + fresh:
+        row["Task"] = "Same task"
+    merged = jr.merge_rows(existing, fresh)
+    assert merged[0]["_rank"] == "1|i0001:"
+
+
+def test_normalize_existing_rows_recovers_rank_from_persisted_column():
+    # Regression: raw Rank used to live only in memory for the run that
+    # fetched it — round-tripping a row through the existing xlsx (as
+    # --update's splice-through-unchanged path does for any task it doesn't
+    # refetch, e.g. one already done) silently dropped "_rank" entirely,
+    # so a later assign_rank_numbers() pass wiped that task's Rank back to
+    # blank even though it had a correct one before. The raw value is now
+    # written to (and read back from) a real hidden "RawRank" column for
+    # exactly this reason — kept distinct from the visible "Rank" column.
+    existing_rows = [{"Feature": "Checkout Redesign", "Link": "ABC-1", "RawRank": "1|i0001:"}]
+    normalized = jr.normalize_existing_rows(existing_rows)
+    assert normalized[0]["_rank"] == "1|i0001:"
+
+
+def test_normalize_existing_rows_rank_none_when_column_absent():
+    # Older report files (built before this existed) have no "RawRank"
+    # column at all — must degrade to no rank data, not raise or invent one.
+    existing_rows = [{"Feature": "Checkout Redesign", "Link": "ABC-1"}]
+    normalized = jr.normalize_existing_rows(existing_rows)
+    assert normalized[0]["_rank"] is None
+
+
+def test_update_splice_no_longer_wipes_rank_for_an_unrefreshed_done_task():
+    # End-to-end regression for the reported bug: running --update (which
+    # never refetches an already-done task) used to blank out that task's
+    # Rank number, even though nothing about its board position changed —
+    # only tasks --update actually refetches got a fresh "_rank", so the
+    # spliced-through "done" row was the one row in the feature missing it.
+    existing_rows = [
+        {"Feature": "Checkout Redesign", "Link": "DONE-1", "RawRank": "1|i0001:", "Status": "done"},
+    ]
+    spliced_through = jr.normalize_existing_rows(existing_rows)  # --update never refetches DONE-1
+    freshly_refetched = [_row("Checkout Redesign", "PROG-1", rank="1|i0002:", status="in progress")]
+
+    result = jr.assign_rank_numbers(spliced_through + freshly_refetched)
+    rank_by_key = {r["Link"]: r["Rank"] for r in result}
+    assert rank_by_key["DONE-1"] == 1  # previously blank ("") — this is the fix
+    assert rank_by_key["PROG-1"] == 2
+
+
+def test_compute_overdue_labels_empty_when_not_two_days_over():
+    assert jr.compute_overdue_labels(3, 2) == set()  # only 1 day over
+    assert jr.compute_overdue_labels(2, 2) == set()  # exactly on time
+
+
+def test_compute_overdue_labels_orange_bucket_at_exactly_two_days():
+    assert jr.compute_overdue_labels(3, 1) == {"2d-overdue", "overdue-orange"}
+
+
+def test_compute_overdue_labels_red_bucket_at_three_plus_days():
+    assert jr.compute_overdue_labels(8, 3) == {"5d-overdue", "overdue-red"}
+
+
+def test_compute_overdue_labels_empty_when_data_missing():
+    assert jr.compute_overdue_labels("", 1) == set()
+    assert jr.compute_overdue_labels(3, "") == set()
+    assert jr.compute_overdue_labels(None, None) == set()
+
+
+def test_sync_overdue_label_not_done_adds_precise_and_bucket_label():
+    to_add, to_remove = jr.sync_overdue_label([], "in progress", 3, 1)
+    assert sorted(to_add) == ["2d-overdue", "overdue-orange"]
+    assert to_remove == []
+
+
+def test_sync_overdue_label_not_done_updates_stale_value_and_bucket():
+    # Yesterday it was 2 days over (orange); today it's 3 (red) — both the
+    # precise number and the color bucket must swap together.
+    to_add, to_remove = jr.sync_overdue_label(["2d-overdue", "overdue-orange"], "in progress", 4, 1)
+    assert sorted(to_add) == ["3d-overdue", "overdue-red"]
+    assert sorted(to_remove) == ["2d-overdue", "overdue-orange"]
+
+
+def test_sync_overdue_label_not_done_removes_when_no_longer_overdue():
+    # ETA got pushed back (or days dropped) — no longer applicable, must clear.
+    to_add, to_remove = jr.sync_overdue_label(["2d-overdue", "overdue-orange"], "in progress", 2, 2)
+    assert to_add == []
+    assert sorted(to_remove) == ["2d-overdue", "overdue-orange"]
+
+
+def test_sync_overdue_label_not_done_no_change_when_already_correct():
+    to_add, to_remove = jr.sync_overdue_label(["2d-overdue", "overdue-orange"], "on hold", 3, 1)
+    assert to_add == []
+    assert to_remove == []
+
+
+def test_sync_overdue_label_done_adds_once_when_missing():
+    to_add, to_remove = jr.sync_overdue_label([], "done", 8, 3)
+    assert sorted(to_add) == ["5d-overdue", "overdue-red"]
+    assert to_remove == []
+
+
+def test_sync_overdue_label_done_never_changes_the_frozen_precise_value():
+    # Regression: this is the whole point of the feature — a done task's
+    # overdue label is a permanent historical record, not a live value.
+    # Even though 8-1=7 would be the "current" recompute, the existing
+    # "5d-overdue" must survive untouched.
+    to_add, to_remove = jr.sync_overdue_label(["5d-overdue", "overdue-red"], "done", 8, 1)
+    assert to_add == []
+    assert to_remove == []
+
+
+def test_sync_overdue_label_done_backfills_bucket_from_frozen_value():
+    # A task labeled "5d-overdue" before the orange/red buckets existed (or
+    # from a run that predates this fix) must get "overdue-red" backfilled
+    # — derived from the FROZEN "5d-overdue" it already has, not a fresh
+    # recompute — without ever touching the precise number itself.
+    to_add, to_remove = jr.sync_overdue_label(["5d-overdue"], "done", 8, 1)
+    assert to_add == ["overdue-red"]
+    assert to_remove == []
+
+
+def test_sync_overdue_label_done_not_overdue_does_nothing():
+    to_add, to_remove = jr.sync_overdue_label([], "done", 3, 2)
+    assert to_add == []
+    assert to_remove == []
+
+
+def test_sync_overdue_labels_writes_via_jput_and_counts_changes():
+    rows = [
+        {"Feature": "F1", "Link": "TASK-1", "Status": "in progress", "Days in Work": 3, "ETA": 1,
+         "_labels": [], "_seq": 0, "Start": None, "End": None},
+        {"Feature": "F1", "Link": "TASK-2", "Status": "done", "Days in Work": 2, "ETA": 5,
+         "_labels": [], "_seq": 0, "Start": None, "End": None},
+    ]
+    put_calls = []
+    original_jput = jr.jput
+    jr.jput = lambda url, payload, context=None: (put_calls.append((url, payload)) or True)
+    try:
+        changed = jr.sync_overdue_labels(rows)
+    finally:
+        jr.jput = original_jput
+    assert changed == 1  # only TASK-1 is overdue; TASK-2 isn't
+    assert len(put_calls) == 1
+    url, payload = put_calls[0]
+    assert "TASK-1" in url
+    added = {op["add"] for op in payload["update"]["labels"] if "add" in op}
+    assert added == {"2d-overdue", "overdue-orange"}
+
+
+def test_sync_overdue_labels_skips_tasks_not_refetched_this_run():
+    # Regression: plain --update splices an already-"done" task through
+    # unchanged from the existing file (it never refetches done tasks) —
+    # normalize_existing_rows() has no way to know that task's REAL current
+    # Jira labels, so "_labels" is None for it. Without this skip,
+    # sync_overdue_labels() treated "unknown" the same as "no labels at
+    # all" and re-sent an "add" for hundreds of already-correctly-labeled
+    # done tasks on every single scheduled run — harmless to Jira (adding
+    # an already-present label is a no-op) but added real minutes to every
+    # run for zero effect, confirmed live (447 redundant writes, ~6 minutes).
+    rows = [
+        {"Feature": "F1", "Link": "DONE-1", "Status": "done", "Days in Work": 8, "ETA": 1,
+         "_labels": None, "_seq": 0, "Start": None, "End": None},
+    ]
+    put_calls = []
+    original_jput = jr.jput
+    jr.jput = lambda url, payload, context=None: (put_calls.append((url, payload)) or True)
+    try:
+        changed = jr.sync_overdue_labels(rows)
+    finally:
+        jr.jput = original_jput
+    assert changed == 0
+    assert put_calls == []
+
+
 def _epic(key, summary):
     return {"key": key, "fields": {"summary": summary, "issuetype": {"name": "Epic"}}}
 

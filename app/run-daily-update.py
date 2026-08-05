@@ -207,10 +207,21 @@ def _sync_to_drive(output_path: str):
     google_client_secrets = settings.get("google_client_secrets")
     if settings.get("local_only") or not drive_folder or not google_client_secrets:
         return None
+    # Settings store this as a project-relative path (e.g.
+    # "app/google-oauth-client-secrets.json") — roadmap-launcher.py and
+    # jira-report.py both resolve it against the project root before use
+    # (their own resolve_project_path()), but this script never did. Under
+    # launchd, WorkingDirectory is the TCC-safe wrapper dir, not the project
+    # root, so the raw relative string silently failed to open with "No
+    # such file or directory" — worked fine interactively (CWD happened to
+    # already be the project root) which is why this went unnoticed.
+    secrets_path = Path(google_client_secrets).expanduser()
+    if not secrets_path.is_absolute():
+        secrets_path = (ROOT.parent / secrets_path).resolve()
     sys.path.insert(0, str(ROOT))
     try:
         from google_drive_sync import upload_or_update
-        upload_or_update(output_path, drive_folder, Path(output_path).name, google_client_secrets)
+        upload_or_update(output_path, drive_folder, Path(output_path).name, str(secrets_path))
         print(f"[drive] synced {output_path} to {drive_folder}", flush=True)
         return True
     except Exception as exc:
